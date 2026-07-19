@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
@@ -50,8 +50,13 @@ app.use((err, req, res, next) => {
   });
 });
 
-const PORT = process.env.PORT || 5000;
-
-connectDB().then(() => {
+const PORT = process.env.PORT || 5000;connectDB().then(async () => {
+  // Auto-seed if database is empty
+  const Product = require('./models/Product');
+  const count = await Product.countDocuments();
+  if (count === 0) {
+    console.log('Database empty — running seed...');
+    require('./seed.js');
+  }
   app.listen(PORT, () => console.log(`Sheen Bazaar API running on port ${PORT}`));
 });
