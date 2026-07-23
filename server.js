@@ -1,4 +1,4 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
@@ -10,6 +10,8 @@ const orderRoutes = require('./routes/orders');
 const sellerRoutes = require('./routes/seller');
 const resellerRoutes = require('./routes/reseller');
 const adminRoutes = require('./routes/admin');
+const walletRoutes = require('./routes/wallet');
+const feedbackRoutes = require('./routes/feedback');
 
 const app = express();
 
@@ -38,6 +40,8 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/seller', sellerRoutes);
 app.use('/api/reseller', resellerRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/feedback', feedbackRoutes);
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -50,6 +54,8 @@ app.use((err, req, res, next) => {
   });
 });
 
-const PORT = process.env.PORT || 5000;connectDB().then(() => {
+const PORT = process.env.PORT || 5000;
+
+connectDB().then(() => {
   app.listen(PORT, () => console.log(`Sheen Bazaar API running on port ${PORT}`));
 });
