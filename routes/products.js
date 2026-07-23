@@ -78,3 +78,18 @@ router.get('/:id/related', async (req, res) => {
 });
 
 module.exports = router;
+
+// POST /api/products/:id/review — customer leaves a review
+router.post('/:id/review', auth(true), async (req, res) => {
+  try {
+    const { rating, comment } = req.body;
+    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ message: 'Rating must be 1-5' });
+    const product = await Product.findOne({ id: Number(req.params.id) });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    product.reviews.push({ user: req.user._id, name: req.user.name, rating: Number(rating), comment: comment || '' });
+    product.reviewCount = product.reviews.length;
+    product.rating = product.reviews.reduce((s, r) => s + r.rating, 0) / product.reviews.length;
+    await product.save();
+    res.json(product);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});

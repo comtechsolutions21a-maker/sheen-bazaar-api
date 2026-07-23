@@ -193,3 +193,14 @@ router.patch('/orders/:id/status', async (req, res) => {
 });
 
 module.exports = router;
+
+// PATCH /api/seller/orders/:id/return — approve or reject return
+router.patch('/orders/:id/return', async (req, res) => {
+  const { action } = req.body; // 'approve' or 'reject'
+  const order = await Order.findOne({ _id: req.params.id, 'items.seller': req.user._id });
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  order.returnStatus = action === 'approve' ? 'approved' : 'rejected';
+  if (action === 'approve') { order.status = 'returned'; order.statusHistory.push({ status: 'returned', note: 'Return approved by seller', updatedBy: 'seller' }); }
+  await order.save();
+  res.json(order);
+});
