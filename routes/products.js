@@ -2,6 +2,7 @@ const express = require('express');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const ResellerListing = require('../models/ResellerListing');
+const auth = require('../middleware/auth');
 
 const router = express.Router();
 
