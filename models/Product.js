@@ -8,6 +8,17 @@ const reviewSchema = new mongoose.Schema({
   at: { type: Date, default: Date.now },
 }, { _id: false });
 
+const qnaSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  name: { type: String, default: 'Customer' },
+  question: { type: String, required: true },
+  answer: { type: String, default: '' },
+  answeredBy: { type: String, default: '' }, // 'seller' or 'admin'
+  answeredAt: { type: Date, default: null },
+  helpfulCount: { type: Number, default: 0 },
+  askedAt: { type: Date, default: Date.now },
+});
+
 const productSchema = new mongoose.Schema({
   id: { type: Number, required: true, unique: true, index: true },
   name: { type: String, required: true },
@@ -20,6 +31,17 @@ const productSchema = new mongoose.Schema({
   rating: { type: Number, default: 4.0 },
   reviewCount: { type: Number, default: 0 },
   reviews: [reviewSchema],
+  questions: [{
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    name: { type: String, default: 'Customer' },
+    question: { type: String, required: true },
+    answer: { type: String, default: '' },
+    answeredBy: { type: String, default: '' }, // 'ai' | 'seller' | 'admin'
+    askedAt: { type: Date, default: Date.now },
+    answeredAt: { type: Date, default: null },
+    helpfulCount: { type: Number, default: 0 },
+  }],
+  qna: [qnaSchema],
   badge: { type: String, default: '' },
   cat: { type: String, required: true, index: true },
   desc: { type: String, default: '' },

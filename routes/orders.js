@@ -129,6 +129,25 @@ router.post('/', async (req, res) => {
 
     await order.save();
 
+    // Refer & Earn: on this user's FIRST paid order, reward both them and whoever referred them.
+    if (paymentStatus === 'paid' && user.referredBy && !user.referralRewardGiven) {
+      try {
+        const Settings = require('../models/Settings');
+        const Wallet = require('../models/Wallet');
+        const settings = await Settings.get();
+        const rewardAmount = settings.referralRewardAmount || 50;
+        const referrer = await User.findById(user.referredBy);
+        if (referrer) {
+          const refereeWallet = await Wallet.getOrCreate(user._id);
+          await refereeWallet.credit(rewardAmount, 'cashback', `Welcome bonus — referred by ${referrer.name}`);
+          const referrerWallet = await Wallet.getOrCreate(referrer._id);
+          await referrerWallet.credit(rewardAmount, 'cashback', `Referral reward — ${user.name} placed their first order`);
+          user.referralRewardGiven = true;
+          await user.save();
+        }
+      } catch (refErr) { console.error('Referral reward failed:', refErr.message); }
+    }
+
     user.cart = new Map();
     await user.save();
 
@@ -152,6 +171,98 @@ router.get('/:id', async (req, res) => {
   const order = await Order.findOne({ _id: req.params.id, user: req.userId });
   if (!order) return res.status(404).json({ message: 'Order not found' });
   res.json(order);
+});
+
+// POST /api/orders/:id/return — customer requests a return
+router.post('/:id/return', async (req, res) => {
+  const { reason } = req.body;
+  if (!reason) return res.status(400).json({ message: 'Please tell us why you want to return this order' });
+  const order = await Order.findOne({ _id: req.params.id, user: req.userId });
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  if (order.status !== 'delivered') return res.status(400).json({ message: 'Only delivered orders can be returned' });
+  if (order.returnStatus !== 'none') return res.status(400).json({ message: 'A return has already been requested for this order' });
+
+  order.returnRequested = true;
+  order.returnReason = reason;
+  order.returnStatus = 'requested';
+  order.returnRequestedAt = new Date();
+  order.status = 'return_requested';
+  order.statusHistory.push({ status: 'return_requested', note: `Customer requested return: ${reason}`, updatedBy: 'customer' });
+  await order.save();
+  res.json(order);
+});
+
+// POST /api/orders/:id/cancel — customer cancels an order before it ships
+router.post('/:id/cancel', async (req, res) => {
+  try {
+    const order = await Order.findOne({ _id: req.params.id, user: req.user._id });
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    const cancellableStatuses = ['placed', 'confirmed', 'packed'];
+    if (!cancellableStatuses.includes(order.status)) {
+      return res.status(400).json({ message: 'This order can no longer be cancelled — it has already shipped. You can request a return once delivered instead.' });
+    }
+
+    order.status = 'cancelled';
+    order.statusHistory.push({ status: 'cancelled', note: req.body.reason || 'Cancelled by customer', updatedBy: 'customer' });
+
+    // Restock items
+    for (const item of order.items) {
+      await Product.findOneAndUpdate({ id: item.productId }, { $inc: { stock: item.qty } });
+    }
+
+    // Refund if already paid
+    if (order.paymentStatus === 'paid') {
+      const Wallet = require('../models/Wallet');
+      const wallet = await Wallet.getOrCreate(order.user);
+      await wallet.credit(order.total, 'refund', `Refund for cancelled order #${String(order._id).slice(-8).toUpperCase()}`, { orderId: order._id });
+      order.paymentStatus = 'refunded';
+      order.refund = { method: 'wallet', amount: order.total, processedAt: new Date() };
+    }
+
+    await order.save();
+    res.json(order);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// ─── SAVED ADDRESSES ───
+// GET /api/orders/addresses/mine — list saved addresses
+router.get('/addresses/mine', async (req, res) => {
+  const user = await User.findById(req.user._id).select('addresses');
+  res.json(user.addresses || []);
+});
+
+// POST /api/orders/addresses/mine — add a new saved address
+router.post('/addresses/mine', async (req, res) => {
+  const { label, fullName, phone, addressLine, city, state, pincode, isDefault } = req.body;
+  if (!fullName || !phone || !addressLine || !city || !pincode) {
+    return res.status(400).json({ message: 'Full name, phone, address, city and pincode are required' });
+  }
+  const user = await User.findById(req.user._id);
+  if (isDefault) user.addresses.forEach(a => { a.isDefault = false; });
+  user.addresses.push({ label: label || 'Home', fullName, phone, addressLine, city, state: state || '', pincode, isDefault: !!isDefault || user.addresses.length === 0 });
+  await user.save();
+  res.status(201).json(user.addresses);
+});
+
+// PATCH /api/orders/addresses/mine/:addrId — edit a saved address
+router.patch('/addresses/mine/:addrId', async (req, res) => {
+  const user = await User.findById(req.user._id);
+  const addr = user.addresses.id(req.params.addrId);
+  if (!addr) return res.status(404).json({ message: 'Address not found' });
+  const allowed = ['label', 'fullName', 'phone', 'addressLine', 'city', 'state', 'pincode'];
+  allowed.forEach(k => { if (req.body[k] !== undefined) addr[k] = req.body[k]; });
+  if (req.body.isDefault) { user.addresses.forEach(a => { a.isDefault = false; }); addr.isDefault = true; }
+  await user.save();
+  res.json(user.addresses);
+});
+
+// DELETE /api/orders/addresses/mine/:addrId — remove a saved address
+router.delete('/addresses/mine/:addrId', async (req, res) => {
+  const user = await User.findById(req.user._id);
+  user.addresses.id(req.params.addrId).deleteOne();
+  await user.save();
+  res.json(user.addresses);
 });
 
 module.exports = router;

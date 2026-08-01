@@ -186,6 +186,27 @@ router.patch('/orders/:id/status', async (req, res) => {
     // Step 7 — Commission: cash just landed, so split it between the
     // platform's commission and the supplier's payout now.
     await applyCommission(order);
+
+    // Refer & Earn: reward on this customer's first paid order (COD counts too)
+    try {
+      const User = require('../models/User');
+      const orderUser = await User.findById(order.user);
+      if (orderUser?.referredBy && !orderUser.referralRewardGiven) {
+        const Settings = require('../models/Settings');
+        const Wallet = require('../models/Wallet');
+        const settings = await Settings.get();
+        const rewardAmount = settings.referralRewardAmount || 50;
+        const referrer = await User.findById(orderUser.referredBy);
+        if (referrer) {
+          const refereeWallet = await Wallet.getOrCreate(orderUser._id);
+          await refereeWallet.credit(rewardAmount, 'cashback', `Welcome bonus — referred by ${referrer.name}`);
+          const referrerWallet = await Wallet.getOrCreate(referrer._id);
+          await referrerWallet.credit(rewardAmount, 'cashback', `Referral reward — ${orderUser.name} placed their first order`);
+          orderUser.referralRewardGiven = true;
+          await orderUser.save();
+        }
+      }
+    } catch (refErr) { console.error('Referral reward failed:', refErr.message); }
   }
 
   await order.save();

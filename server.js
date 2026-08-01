@@ -10,8 +10,10 @@ const orderRoutes = require('./routes/orders');
 const sellerRoutes = require('./routes/seller');
 const resellerRoutes = require('./routes/reseller');
 const adminRoutes = require('./routes/admin');
+const publicRoutes = require('./routes/public');
 const walletRoutes = require('./routes/wallet');
 const feedbackRoutes = require('./routes/feedback');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 
@@ -39,9 +41,14 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/seller', sellerRoutes);
 app.use('/api/reseller', resellerRoutes);
+// Public storefront config (site content, notifications, gateways, tax) must be
+// mounted BEFORE the auth-walled admin router, since both share the /api/admin/public/*
+// path prefix and Express matches routes in registration order.
+app.use('/api/admin', publicRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/feedback', feedbackRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Global error handler
 app.use((err, req, res, next) => {

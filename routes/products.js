@@ -3,6 +3,7 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const ResellerListing = require('../models/ResellerListing');
 const auth = require('../middleware/auth');
+const { generateAiAnswer } = require('../utils/aiAnswer');
 
 const router = express.Router();
 
@@ -78,8 +79,6 @@ router.get('/:id/related', async (req, res) => {
   res.json(related);
 });
 
-module.exports = router;
-
 // POST /api/products/:id/review — customer leaves a review
 router.post('/:id/review', auth(true), async (req, res) => {
   try {
@@ -94,3 +93,65 @@ router.post('/:id/review', auth(true), async (req, res) => {
     res.json(product);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
+
+// ─── PRODUCT Q&A ───
+// POST /api/products/:id/question — customer asks a question
+router.post('/:id/question', auth(true), async (req, res) => {
+  try {
+    const { question } = req.body;
+    if (!question || !question.trim()) return res.status(400).json({ message: 'Question cannot be empty' });
+    const product = await Product.findOne({ id: Number(req.params.id) });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    const trimmedQuestion = question.trim();
+    const newEntry = { user: req.user._id, name: req.user.name, question: trimmedQuestion };
+    product.questions.unshift(newEntry);
+
+    // Try to answer instantly using AI, grounded in this product's own listed details.
+    // If no API key is configured or the call fails, the question is simply left
+    // unanswered for the seller/admin to reply to manually — nothing breaks either way.
+    const aiAnswer = await generateAiAnswer(product, trimmedQuestion);
+    if (aiAnswer) {
+      product.questions[0].answer = aiAnswer;
+      product.questions[0].answeredBy = 'ai';
+      product.questions[0].answeredAt = new Date();
+    }
+
+    await product.save();
+    res.status(201).json(product.questions);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// PATCH /api/products/:id/question/:qIndex — seller or admin answers a question
+router.patch('/:id/question/:qIndex', auth(true), async (req, res) => {
+  try {
+    if (!['seller', 'admin'].includes(req.user.role)) return res.status(403).json({ message: 'Only the seller or admin can answer questions' });
+    const { answer } = req.body;
+    if (!answer || !answer.trim()) return res.status(400).json({ message: 'Answer cannot be empty' });
+    const product = await Product.findOne({ id: Number(req.params.id) });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    if (req.user.role === 'seller' && String(product.seller) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'You can only answer questions on your own products' });
+    }
+    const q = product.questions[Number(req.params.qIndex)];
+    if (!q) return res.status(404).json({ message: 'Question not found' });
+    q.answer = answer.trim();
+    q.answeredBy = req.user.role;
+    q.answeredAt = new Date();
+    await product.save();
+    res.json(product.questions);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// PATCH /api/products/:id/question/:qIndex/helpful — mark a Q&A as helpful
+router.patch('/:id/question/:qIndex/helpful', async (req, res) => {
+  const product = await Product.findOne({ id: Number(req.params.id) });
+  if (!product) return res.status(404).json({ message: 'Product not found' });
+  const q = product.questions[Number(req.params.qIndex)];
+  if (!q) return res.status(404).json({ message: 'Question not found' });
+  q.helpfulCount = (q.helpfulCount || 0) + 1;
+  await product.save();
+  res.json({ helpfulCount: q.helpfulCount });
+});
+
+module.exports = router;

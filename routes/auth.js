@@ -94,7 +94,7 @@ router.post('/verify-otp', async (req, res) => {
 // POST /api/auth/signup
 router.post('/signup', async (req, res) => {
   try {
-    const { name, email, password, phone, role, businessName } = req.body;
+    const { name, email, password, phone, role, businessName, referralCode } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'Name, email and password are required' });
     }
@@ -105,11 +105,27 @@ router.post('/signup', async (req, res) => {
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) return res.status(409).json({ message: 'An account with this email already exists' });
 
+    // Generate a unique referral code for this new user, e.g. SHEEN-A1B2C3
+    let newCode;
+    for (let i = 0; i < 5; i++) {
+      const candidate = `SHEEN-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      if (!(await User.findOne({ referralCode: candidate }))) { newCode = candidate; break; }
+    }
+
+    // Link to the referrer, if a valid code was supplied
+    let referredBy = null;
+    if (referralCode) {
+      const referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+      if (referrer) referredBy = referrer._id;
+    }
+
     const user = await User.create({
       name, email, password, phone,
       role: safeRole,
       businessName: safeRole === 'seller' || safeRole === 'reseller' ? businessName : '',
       sellerApproved: false,
+      referralCode: newCode,
+      referredBy,
     });
     const token = signToken(user._id);
     res.status(201).json({ token, user: user.toSafeJSON() });
@@ -229,4 +245,65 @@ router.post('/verify-email-otp', async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: 'Verification failed', error: err.message });
   }
+});
+
+// POST /api/auth/seller-docs — seller submits KYC documents for review
+router.post('/seller-docs', auth(true), async (req, res) => {
+  try {
+    if (req.user.role !== 'seller') return res.status(403).json({ message: 'Only seller accounts can submit documents' });
+    const { panCard, aadhaarFront, aadhaarBack, gstCertificate, bankProof, shopPhoto } = req.body;
+    if (!panCard || !aadhaarFront || !aadhaarBack || !bankProof) {
+      return res.status(400).json({ message: 'PAN card, Aadhaar (front & back) and bank proof are required' });
+    }
+    const user = await User.findById(req.user._id);
+    user.sellerDocs = {
+      panCard, aadhaarFront, aadhaarBack,
+      gstCertificate: gstCertificate || '',
+      bankProof,
+      shopPhoto: shopPhoto || '',
+      submittedAt: new Date(),
+    };
+    user.sellerDocsStatus = 'pending';
+    user.sellerDocsRejectReason = '';
+    await user.save();
+    res.json({ success: true, status: 'pending' });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// GET /api/auth/seller-docs — seller checks their own submission status
+router.get('/seller-docs', auth(true), async (req, res) => {
+  const user = await User.findById(req.user._id);
+  res.json({
+    status: user.sellerDocsStatus,
+    rejectReason: user.sellerDocsRejectReason,
+    submittedAt: user.sellerDocs?.submittedAt || null,
+    sellerApproved: user.sellerApproved,
+  });
+});
+
+// GET /api/auth/referral — my referral code, how many people I've referred, total earned
+router.get('/referral', auth(true), async (req, res) => {
+  const user = await User.findById(req.user._id);
+  const referredUsers = await User.find({ referredBy: user._id }).select('name createdAt referralRewardGiven');
+  const successfulReferrals = referredUsers.filter(u => u.referralRewardGiven).length;
+  const Settings = require('../models/Settings');
+  const settings = await Settings.get();
+  res.json({
+    referralCode: user.referralCode,
+    rewardAmount: settings.referralRewardAmount || 50,
+    totalReferred: referredUsers.length,
+    successfulReferrals,
+    totalEarned: successfulReferrals * (settings.referralRewardAmount || 50),
+    referredUsers: referredUsers.map(u => ({ name: u.name, joinedAt: u.createdAt, rewarded: u.referralRewardGiven })),
+  });
+});
+
+// PATCH /api/auth/profile — update own name/phone
+router.patch('/profile', auth(true), async (req, res) => {
+  const { name, phone } = req.body;
+  const user = await User.findById(req.user._id);
+  if (name) user.name = name;
+  if (phone !== undefined) user.phone = phone;
+  await user.save();
+  res.json({ user: user.toSafeJSON() });
 });

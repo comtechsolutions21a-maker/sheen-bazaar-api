@@ -50,7 +50,7 @@ router.get('/stats', async (req, res) => {
 router.get('/settings', async (req, res) => { res.json(await Settings.get()); });
 router.put('/settings', async (req, res) => {
   const settings = await Settings.get();
-  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','facebookUrl','instagramUrl','twitterUrl','lowStockThreshold'];
+  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','whatsappMessage','facebookUrl','instagramUrl','twitterUrl','youtubeUrl','linkedinUrl','pinterestUrl','telegramUrl','threadsUrl','lowStockThreshold','gstin','gstEnabled','gstPercent','referralRewardAmount'];
   allowed.forEach(k => { if (req.body[k] !== undefined) settings[k] = req.body[k]; });
   await settings.save();
   res.json(settings);
@@ -67,15 +67,6 @@ router.put('/site-content', async (req, res) => {
 });
 
 // Public route for site content (no auth needed)
-router.get('/public/site-content', async (req, res) => {
-  const content = await SiteContent.get();
-  // Don't expose secret keys publicly
-  const safe = content.toObject();
-  delete safe.razorpayKeySecret;
-  delete safe.cashfreeSecretKey;
-  res.json(safe);
-});
-
 // ─── USERS ───
 router.get('/users', async (req, res) => {
   const filter = {};
@@ -251,13 +242,6 @@ router.delete('/notifications/:id', async (req, res) => {
   res.json({ deleted: true });
 });
 
-// Public route for active notifications
-router.get('/public/notifications', async (req, res) => {
-  const now = new Date();
-  const notifications = await Notification.find({ isActive: true, $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }] }).sort({ createdAt: -1 });
-  res.json(notifications);
-});
-
 // ─── RAZORPAY ───
 router.post('/razorpay/create-order', async (req, res) => {
   try {
@@ -355,14 +339,135 @@ router.post('/cashfree/verify', async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// Public gateway status — tells frontend which gateways are available
-router.get('/public/gateways', async (req, res) => {
-  const content = await SiteContent.get();
+// ─── SELLER KYC DOCUMENTS ───
+router.get('/seller-docs/:id', async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user || user.role !== 'seller') return res.status(404).json({ message: 'Seller not found' });
   res.json({
-    razorpay: !!(content.razorpayEnabled && content.razorpayKeyId),
-    cashfree: !!(content.cashfreeEnabled && content.cashfreeAppId),
-    primary: content.primaryGateway || 'razorpay',
+    docs: user.sellerDocs,
+    status: user.sellerDocsStatus,
+    rejectReason: user.sellerDocsRejectReason,
+    businessName: user.businessName,
+    name: user.name,
+    email: user.email,
   });
+});
+
+router.patch('/seller-docs/:id/review', async (req, res) => {
+  const { action, reason } = req.body; // action: 'approve' | 'reject'
+  const user = await User.findById(req.params.id);
+  if (!user || user.role !== 'seller') return res.status(404).json({ message: 'Seller not found' });
+  if (action === 'approve') {
+    user.sellerDocsStatus = 'approved';
+    user.sellerApproved = true;
+    user.sellerDocsRejectReason = '';
+  } else if (action === 'reject') {
+    user.sellerDocsStatus = 'rejected';
+    user.sellerApproved = false;
+    user.sellerDocsRejectReason = reason || 'Documents did not meet requirements';
+  } else {
+    return res.status(400).json({ message: 'action must be approve or reject' });
+  }
+  await user.save();
+  res.json({ success: true, status: user.sellerDocsStatus });
+});
+
+// ─── RETURNS ───
+// GET /api/admin/returns — all orders with an active return request
+router.get('/returns', async (req, res) => {
+  const filter = req.query.status ? { returnStatus: req.query.status } : { returnStatus: { $in: ['requested', 'approved'] } };
+  const orders = await Order.find(filter).populate('user', 'name email phone').sort({ returnRequestedAt: -1 });
+  res.json(orders);
+});
+
+// PATCH /api/admin/returns/:id/assign-pickup — admin assigns a reverse-pickup courier
+router.patch('/returns/:id/assign-pickup', async (req, res) => {
+  const { courierPartner, pickupTrackingNumber, scheduledDate } = req.body;
+  if (!courierPartner) return res.status(400).json({ message: 'Courier partner required' });
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  order.returnStatus = 'approved';
+  order.returnPickup = {
+    courierPartner,
+    pickupTrackingNumber: pickupTrackingNumber || '',
+    scheduledDate: scheduledDate ? new Date(scheduledDate) : null,
+    assignedAt: new Date(),
+  };
+  order.statusHistory.push({ status: 'return_requested', note: `Return approved — pickup assigned to ${courierPartner}`, updatedBy: 'admin' });
+  await order.save();
+  res.json(order);
+});
+
+// PATCH /api/admin/returns/:id/reject — admin rejects the return
+router.patch('/returns/:id/reject', async (req, res) => {
+  const { reason } = req.body;
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  order.returnStatus = 'rejected';
+  order.status = 'delivered'; // back to delivered since return was declined
+  order.statusHistory.push({ status: 'delivered', note: `Return rejected: ${reason || 'Not eligible'}`, updatedBy: 'admin' });
+  await order.save();
+  res.json(order);
+});
+
+// PATCH /api/admin/returns/:id/complete — pickup done, item received back, refund processed
+router.patch('/returns/:id/complete', async (req, res) => {
+  const { refundMethod } = req.body; // 'wallet' | 'original_payment'
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  order.returnStatus = 'completed';
+  order.status = 'returned';
+  order.refund = { method: refundMethod || 'wallet', amount: order.total, processedAt: new Date() };
+  order.statusHistory.push({ status: 'returned', note: `Return completed — refunded ₹${order.total} via ${refundMethod || 'wallet'}`, updatedBy: 'admin' });
+
+  if (refundMethod === 'wallet') {
+    const Wallet = require('../models/Wallet');
+    const wallet = await Wallet.getOrCreate(order.user);
+    await wallet.credit(order.total, 'refund', `Refund for order #${String(order._id).slice(-8).toUpperCase()}`, { orderId: order._id });
+  }
+
+  await order.save();
+  res.json(order);
+});
+
+// ─── LIVE CHAT SUPPORT (admin side) ───
+const ChatThread = require('../models/ChatMessage');
+
+// GET /api/admin/chat/threads — all chat threads, most recent first
+router.get('/chat/threads', async (req, res) => {
+  const threads = await ChatThread.find({}).populate('user', 'name email phone').sort({ lastMessageAt: -1 });
+  res.json(threads);
+});
+
+// GET /api/admin/chat/threads/:id — one thread, marks read by admin
+router.get('/chat/threads/:id', async (req, res) => {
+  const thread = await ChatThread.findById(req.params.id).populate('user', 'name email phone');
+  if (!thread) return res.status(404).json({ message: 'Thread not found' });
+  thread.unreadByAdmin = false;
+  await thread.save();
+  res.json(thread);
+});
+
+// POST /api/admin/chat/threads/:id/reply — admin replies to a customer
+router.post('/chat/threads/:id/reply', async (req, res) => {
+  const { text } = req.body;
+  if (!text || !text.trim()) return res.status(400).json({ message: 'Message cannot be empty' });
+  const thread = await ChatThread.findById(req.params.id);
+  if (!thread) return res.status(404).json({ message: 'Thread not found' });
+  thread.messages.push({ from: 'admin', text: text.trim() });
+  thread.lastMessageAt = new Date();
+  thread.unreadByCustomer = true;
+  await thread.save();
+  res.json(thread);
+});
+
+// PATCH /api/admin/chat/threads/:id/close — mark resolved
+router.patch('/chat/threads/:id/close', async (req, res) => {
+  const thread = await ChatThread.findById(req.params.id);
+  if (!thread) return res.status(404).json({ message: 'Thread not found' });
+  thread.status = 'closed';
+  await thread.save();
+  res.json(thread);
 });
 
 module.exports = router;
