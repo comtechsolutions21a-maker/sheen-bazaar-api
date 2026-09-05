@@ -63,6 +63,7 @@ router.get('/public/social', async (req, res) => {
     threadsUrl: settings.threadsUrl || '',
     supportEmail: settings.supportEmail || '',
     supportPhone: settings.supportPhone || '',
+    address: settings.address || '',
   });
 });
 
