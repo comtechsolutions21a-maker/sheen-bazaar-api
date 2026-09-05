@@ -196,6 +196,13 @@ router.post('/', async (req, res) => {
 
     await order.save();
 
+    // Decrement stock now that the order is genuinely placed. Mirrors the
+    // restock done on cancellation (POST /:id/cancel below) — without this,
+    // stock counts never reflected real sales and products could be oversold.
+    for (const item of items) {
+      await Product.findOneAndUpdate({ id: item.productId }, { $inc: { stock: -item.qty } });
+    }
+
     // Refer & Earn: on this user's FIRST paid order, reward both them and whoever referred them.
     if (paymentStatus === 'paid' && user.referredBy && !user.referralRewardGiven) {
       try {

@@ -147,7 +147,7 @@ router.get('/earnings', async (req, res) => {
 // (reserved for confirmation flows) or "cancelled" (admin/customer only, kept simple here).
 router.patch('/orders/:id/status', async (req, res) => {
   const { status, note, shippingMethod, courierPartner, trackingNumber } = req.body;
-  const allowed = ['confirmed', 'shipped', 'out_for_delivery'];
+  const allowed = ['confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered'];
   if (!allowed.includes(status)) {
     return res.status(400).json({ message: `status must be one of: ${allowed.join(', ')}` });
   }
@@ -213,9 +213,7 @@ router.patch('/orders/:id/status', async (req, res) => {
   res.json(order);
 });
 
-module.exports = router;
-
-// PATCH /api/seller/orders/:id/return — approve or reject return
+// PATCH /api/seller/orders/:id/return — approve or reject a customer's return request
 router.patch('/orders/:id/return', async (req, res) => {
   const { action } = req.body; // 'approve' or 'reject'
   const order = await Order.findOne({ _id: req.params.id, 'items.seller': req.user._id });
@@ -225,3 +223,5 @@ router.patch('/orders/:id/return', async (req, res) => {
   await order.save();
   res.json(order);
 });
+
+module.exports = router;
