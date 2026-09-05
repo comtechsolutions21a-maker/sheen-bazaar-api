@@ -7,6 +7,7 @@ const auth = require('../middleware/auth');
 const { sendMail } = require('../utils/mailer');
 const { chargeOnline } = require('../utils/payments');
 const { applyCommission } = require('../utils/commission');
+const Settings = require('../models/Settings');
 
 const router = express.Router();
 router.use(auth(true));
@@ -41,7 +42,7 @@ async function notifySellers(order) {
 // Builds the order from the user's current server-side cart, then clears the cart.
 router.post('/', async (req, res) => {
   try {
-    const { address, paymentMethod } = req.body;
+    const { address, paymentMethod, couponCode, razorpayOrderId, razorpayPaymentId, razorpaySignature, cashfreeOrderId } = req.body;
     const user = await User.findById(req.userId);
     const cartObj = Object.fromEntries(user.cart || []);
     const keys = Object.keys(cartObj);
@@ -93,13 +94,41 @@ router.post('/', async (req, res) => {
 
     const itemsTotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
     const deliveryFee = itemsTotal >= 499 ? 0 : 49;
-    const total = itemsTotal + deliveryFee;
 
-    // Step 6 — Payment: online methods are captured right away (money lands in
-    // the business account immediately); COD is collected later at delivery.
+    // Apply a coupon (if one was supplied and is still genuinely valid) —
+    // re-checked here rather than trusting the earlier /validate-coupon call,
+    // since that was only a preview and someone could otherwise place an
+    // order with a stale or already-used-up code.
+    let discount = 0;
+    let appliedCouponCode = '';
+    if (couponCode) {
+      const settings = await Settings.get();
+      const coupon = settings.coupons.find(c => c.code.toUpperCase() === String(couponCode).toUpperCase());
+      if (coupon && coupon.active && coupon.uses < coupon.maxUses &&
+          (!coupon.expiresAt || new Date(coupon.expiresAt) >= new Date()) &&
+          (!coupon.minOrderValue || itemsTotal >= coupon.minOrderValue)) {
+        discount = Math.floor((itemsTotal * coupon.discountPercent) / 100);
+        appliedCouponCode = coupon.code;
+        coupon.uses += 1;
+        await settings.save();
+      }
+    }
+
+    const total = itemsTotal + deliveryFee - discount;
+
+    // Step 6 — Payment:
+    // - COD is collected later at delivery.
+    // - UPI/CARD here refers to the site's own simulated instant-charge path
+    //   (utils/payments.chargeOnline), kept for any flow still using it.
+    // - RAZORPAY/CASHFREE come from the real gateway popup on Checkout — the
+    //   frontend already collected the payment signature, so we verify it
+    //   here before ever marking the order paid. If verification fails or
+    //   the signature is missing, the order is created as 'pending' instead
+    //   of silently trusting the client.
     const method = paymentMethod || 'COD';
     let paymentStatus = 'pending';
     let transactionId = '';
+
     if (method === 'UPI' || method === 'CARD') {
       const charge = chargeOnline(method, total);
       if (!charge.success) {
@@ -107,6 +136,42 @@ router.post('/', async (req, res) => {
       }
       paymentStatus = 'paid';
       transactionId = charge.transactionId;
+    } else if (method === 'RAZORPAY' && razorpayOrderId && razorpayPaymentId && razorpaySignature) {
+      const SiteContent = require('../models/SiteContent');
+      const crypto = require('crypto');
+      const content = await SiteContent.get();
+      const expectedSign = crypto.createHmac('sha256', content.razorpayKeySecret)
+        .update(razorpayOrderId + '|' + razorpayPaymentId)
+        .digest('hex');
+      if (expectedSign === razorpaySignature) {
+        paymentStatus = 'paid';
+        transactionId = razorpayPaymentId;
+      } else {
+        return res.status(400).json({ message: 'Payment verification failed. Please contact support before retrying.' });
+      }
+    } else if (method === 'CASHFREE' && cashfreeOrderId) {
+      const SiteContent = require('../models/SiteContent');
+      const content = await SiteContent.get();
+      const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
+      try {
+        const cfRes = await fetch(`${base}/orders/${cashfreeOrderId}/payments`, {
+          headers: {
+            'x-api-version': '2023-08-01',
+            'x-client-id': content.cashfreeAppId,
+            'x-client-secret': content.cashfreeSecretKey,
+          },
+        });
+        const payments = await cfRes.json();
+        const successPayment = Array.isArray(payments) ? payments.find(p => p.payment_status === 'SUCCESS') : null;
+        if (successPayment) {
+          paymentStatus = 'paid';
+          transactionId = successPayment.cf_payment_id;
+        } else {
+          return res.status(400).json({ message: 'Payment not confirmed by Cashfree yet. Please contact support before retrying.' });
+        }
+      } catch (cfErr) {
+        return res.status(400).json({ message: 'Could not verify Cashfree payment. Please contact support before retrying.' });
+      }
     }
 
     const order = new Order({
@@ -114,6 +179,8 @@ router.post('/', async (req, res) => {
       items,
       itemsTotal,
       deliveryFee,
+      discount,
+      couponCode: appliedCouponCode,
       total,
       address,
       paymentMethod: method,
@@ -263,6 +330,40 @@ router.delete('/addresses/mine/:addrId', async (req, res) => {
   user.addresses.id(req.params.addrId).deleteOne();
   await user.save();
   res.json(user.addresses);
+});
+
+
+// POST /api/orders/validate-coupon — check a coupon code before checkout,
+// without consuming a use yet (that happens when the order is actually
+// placed with couponCode set). Mirrors the coupon shape admin.js writes to
+// Settings.coupons: { code, discountPercent, maxUses, uses, expiresAt, minOrderValue, active }.
+router.post('/validate-coupon', async (req, res) => {
+  try {
+    const { code, orderTotal } = req.body;
+    if (!code) return res.status(400).json({ message: 'Coupon code is required' });
+
+    const settings = await Settings.get();
+    const coupon = settings.coupons.find(c => c.code.toUpperCase() === String(code).toUpperCase());
+
+    if (!coupon) return res.status(404).json({ message: 'Invalid coupon code' });
+    if (!coupon.active) return res.status(400).json({ message: 'This coupon is no longer active' });
+    if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
+      return res.status(400).json({ message: 'This coupon has expired' });
+    }
+    if (coupon.uses >= coupon.maxUses) {
+      return res.status(400).json({ message: 'This coupon has reached its usage limit' });
+    }
+    if (coupon.minOrderValue && Number(orderTotal) < coupon.minOrderValue) {
+      return res.status(400).json({ message: `This coupon requires a minimum order of ₹${coupon.minOrderValue}` });
+    }
+
+    res.json({
+      coupon: {
+        code: coupon.code,
+        discountPercent: coupon.discountPercent,
+      },
+    });
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 module.exports = router;
