@@ -7,8 +7,8 @@ router.use(auth(true));
 
 // GET /api/chat/mine — customer's own chat thread (creates if doesn't exist)
 router.get('/mine', async (req, res) => {
-  let thread = await ChatThread.findOne({ user: req.user._id });
-  if (!thread) thread = await ChatThread.create({ user: req.user._id, messages: [] });
+  let thread = await ChatThread.findOne({ user: req.userId });
+  if (!thread) thread = await ChatThread.create({ user: req.userId, messages: [] });
   thread.unreadByCustomer = false;
   await thread.save();
   res.json(thread);
@@ -18,8 +18,8 @@ router.get('/mine', async (req, res) => {
 router.post('/mine', async (req, res) => {
   const { text } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ message: 'Message cannot be empty' });
-  let thread = await ChatThread.findOne({ user: req.user._id });
-  if (!thread) thread = await ChatThread.create({ user: req.user._id, messages: [] });
+  let thread = await ChatThread.findOne({ user: req.userId });
+  if (!thread) thread = await ChatThread.create({ user: req.userId, messages: [] });
   thread.messages.push({ from: 'customer', text: text.trim() });
   thread.status = 'open';
   thread.lastMessageAt = new Date();

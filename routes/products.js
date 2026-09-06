@@ -45,7 +45,11 @@ router.get('/reseller/:resellerId', async (req, res) => {
   if (!reseller) return res.status(404).json({ message: 'Reseller not found' });
 
   const listings = await ResellerListing.find({ reseller: reseller._id, active: true });
-  const productIds = listings.map((l) => l.productId);
+  // Guard against any listing with a missing/invalid productId (e.g. from
+  // older data) — passing a non-numeric value into a Number-typed $in query
+  // throws an uncaught assertion in Mongoose that crashes the whole server,
+  // not just this request, so we filter defensively before querying.
+  const productIds = listings.map((l) => l.productId).filter((id) => Number.isFinite(id));
   const products = await Product.find({ id: { $in: productIds }, active: true });
   const productMap = new Map(products.map((p) => [p.id, p]));
 
@@ -84,9 +88,11 @@ router.post('/:id/review', auth(true), async (req, res) => {
   try {
     const { rating, comment } = req.body;
     if (!rating || rating < 1 || rating > 5) return res.status(400).json({ message: 'Rating must be 1-5' });
+    const reviewer = await User.findById(req.userId);
+    if (!reviewer) return res.status(401).json({ message: 'Not authenticated' });
     const product = await Product.findOne({ id: Number(req.params.id) });
     if (!product) return res.status(404).json({ message: 'Product not found' });
-    product.reviews.push({ user: req.user._id, name: req.user.name, rating: Number(rating), comment: comment || '' });
+    product.reviews.push({ user: req.userId, name: reviewer.name, rating: Number(rating), comment: comment || '' });
     product.reviewCount = product.reviews.length;
     product.rating = product.reviews.reduce((s, r) => s + r.rating, 0) / product.reviews.length;
     await product.save();
@@ -103,8 +109,10 @@ router.post('/:id/question', auth(true), async (req, res) => {
     const product = await Product.findOne({ id: Number(req.params.id) });
     if (!product) return res.status(404).json({ message: 'Product not found' });
 
+    const asker = await User.findById(req.userId);
+    if (!asker) return res.status(401).json({ message: 'Not authenticated' });
     const trimmedQuestion = question.trim();
-    const newEntry = { user: req.user._id, name: req.user.name, question: trimmedQuestion };
+    const newEntry = { user: req.userId, name: asker.name, question: trimmedQuestion };
     product.questions.unshift(newEntry);
 
     // Try to answer instantly using AI, grounded in this product's own listed details.
@@ -125,18 +133,20 @@ router.post('/:id/question', auth(true), async (req, res) => {
 // PATCH /api/products/:id/question/:qIndex — seller or admin answers a question
 router.patch('/:id/question/:qIndex', auth(true), async (req, res) => {
   try {
-    if (!['seller', 'admin'].includes(req.user.role)) return res.status(403).json({ message: 'Only the seller or admin can answer questions' });
+    const answerer = await User.findById(req.userId);
+    if (!answerer) return res.status(401).json({ message: 'Not authenticated' });
+    if (!['seller', 'admin'].includes(answerer.role)) return res.status(403).json({ message: 'Only the seller or admin can answer questions' });
     const { answer } = req.body;
     if (!answer || !answer.trim()) return res.status(400).json({ message: 'Answer cannot be empty' });
     const product = await Product.findOne({ id: Number(req.params.id) });
     if (!product) return res.status(404).json({ message: 'Product not found' });
-    if (req.user.role === 'seller' && String(product.seller) !== String(req.user._id)) {
+    if (answerer.role === 'seller' && String(product.seller) !== String(req.userId)) {
       return res.status(403).json({ message: 'You can only answer questions on your own products' });
     }
     const q = product.questions[Number(req.params.qIndex)];
     if (!q) return res.status(404).json({ message: 'Question not found' });
     q.answer = answer.trim();
-    q.answeredBy = req.user.role;
+    q.answeredBy = answerer.role;
     q.answeredAt = new Date();
     await product.save();
     res.json(product.questions);

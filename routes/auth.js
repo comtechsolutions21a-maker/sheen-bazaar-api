@@ -250,12 +250,13 @@ router.post('/verify-email-otp', async (req, res) => {
 // POST /api/auth/seller-docs — seller submits KYC documents for review
 router.post('/seller-docs', auth(true), async (req, res) => {
   try {
-    if (req.user.role !== 'seller') return res.status(403).json({ message: 'Only seller accounts can submit documents' });
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(401).json({ message: 'Not authenticated' });
+    if (user.role !== 'seller') return res.status(403).json({ message: 'Only seller accounts can submit documents' });
     const { panCard, aadhaarFront, aadhaarBack, gstCertificate, bankProof, shopPhoto } = req.body;
     if (!panCard || !aadhaarFront || !aadhaarBack || !bankProof) {
       return res.status(400).json({ message: 'PAN card, Aadhaar (front & back) and bank proof are required' });
     }
-    const user = await User.findById(req.user._id);
     user.sellerDocs = {
       panCard, aadhaarFront, aadhaarBack,
       gstCertificate: gstCertificate || '',
@@ -272,7 +273,7 @@ router.post('/seller-docs', auth(true), async (req, res) => {
 
 // GET /api/auth/seller-docs — seller checks their own submission status
 router.get('/seller-docs', auth(true), async (req, res) => {
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.userId);
   res.json({
     status: user.sellerDocsStatus,
     rejectReason: user.sellerDocsRejectReason,
@@ -283,7 +284,7 @@ router.get('/seller-docs', auth(true), async (req, res) => {
 
 // GET /api/auth/referral — my referral code, how many people I've referred, total earned
 router.get('/referral', auth(true), async (req, res) => {
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.userId);
   const referredUsers = await User.find({ referredBy: user._id }).select('name createdAt referralRewardGiven');
   const successfulReferrals = referredUsers.filter(u => u.referralRewardGiven).length;
   const Settings = require('../models/Settings');
@@ -301,7 +302,7 @@ router.get('/referral', auth(true), async (req, res) => {
 // PATCH /api/auth/profile — update own name/phone
 router.patch('/profile', auth(true), async (req, res) => {
   const { name, phone } = req.body;
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.userId);
   if (name) user.name = name;
   if (phone !== undefined) user.phone = phone;
   await user.save();

@@ -269,7 +269,7 @@ router.post('/:id/return', async (req, res) => {
 // POST /api/orders/:id/cancel — customer cancels an order before it ships
 router.post('/:id/cancel', async (req, res) => {
   try {
-    const order = await Order.findOne({ _id: req.params.id, user: req.user._id });
+    const order = await Order.findOne({ _id: req.params.id, user: req.userId });
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
     const cancellableStatuses = ['placed', 'confirmed', 'packed'];
@@ -302,7 +302,7 @@ router.post('/:id/cancel', async (req, res) => {
 // ─── SAVED ADDRESSES ───
 // GET /api/orders/addresses/mine — list saved addresses
 router.get('/addresses/mine', async (req, res) => {
-  const user = await User.findById(req.user._id).select('addresses');
+  const user = await User.findById(req.userId).select('addresses');
   res.json(user.addresses || []);
 });
 
@@ -312,7 +312,7 @@ router.post('/addresses/mine', async (req, res) => {
   if (!fullName || !phone || !addressLine || !city || !pincode) {
     return res.status(400).json({ message: 'Full name, phone, address, city and pincode are required' });
   }
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.userId);
   if (isDefault) user.addresses.forEach(a => { a.isDefault = false; });
   user.addresses.push({ label: label || 'Home', fullName, phone, addressLine, city, state: state || '', pincode, isDefault: !!isDefault || user.addresses.length === 0 });
   await user.save();
@@ -321,7 +321,7 @@ router.post('/addresses/mine', async (req, res) => {
 
 // PATCH /api/orders/addresses/mine/:addrId — edit a saved address
 router.patch('/addresses/mine/:addrId', async (req, res) => {
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.userId);
   const addr = user.addresses.id(req.params.addrId);
   if (!addr) return res.status(404).json({ message: 'Address not found' });
   const allowed = ['label', 'fullName', 'phone', 'addressLine', 'city', 'state', 'pincode'];
@@ -333,7 +333,7 @@ router.patch('/addresses/mine/:addrId', async (req, res) => {
 
 // DELETE /api/orders/addresses/mine/:addrId — remove a saved address
 router.delete('/addresses/mine/:addrId', async (req, res) => {
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.userId);
   user.addresses.id(req.params.addrId).deleteOne();
   await user.save();
   res.json(user.addresses);

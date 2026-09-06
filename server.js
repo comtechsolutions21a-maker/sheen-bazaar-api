@@ -61,6 +61,27 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Safety net: an uncaught error thrown inside an async route handler (e.g. a
+// bug like req.user being undefined, or a bad value reaching a database
+// query) does NOT get caught by the app.use((err, req, res, next) => ...)
+// middleware above — Express only catches errors passed to next(err) or
+// thrown synchronously. An uncaught exception in async code instead crashes
+// the entire Node process, taking down every single request being served at
+// that moment (this is exactly what was happening: one broken route was
+// intermittently killing the whole server, which looked like random,
+// unrelated features — including payments — failing).
+//
+// These two handlers log the real error for debugging but keep the process
+// alive, so one bad request can no longer take the whole site down. Fixing
+// the actual bugs (as done throughout routes/*.js) remains the real fix —
+// this is a backstop for whatever slips through in the future.
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION] — server stayed alive, but this needs fixing:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED REJECTION] — server stayed alive, but this needs fixing:', reason);
+});
+
 const PORT = process.env.PORT || 5000;
 
 connectDB().then(() => {

@@ -9,7 +9,7 @@ router.use(auth(true));
 
 // GET /api/wallet — balance + recent transactions
 router.get('/', async (req, res) => {
-  const wallet = await Wallet.getOrCreate(req.user._id);
+  const wallet = await Wallet.getOrCreate(req.userId);
   res.json({ balance: wallet.balance, transactions: wallet.transactions.slice(0, 50) });
 });
 
@@ -36,7 +36,7 @@ router.post('/add-money/verify', async (req, res) => {
     const expected = crypto.createHmac('sha256', content.razorpayKeySecret).update(sign).digest('hex');
     if (expected !== razorpay_signature) return res.status(400).json({ message: 'Payment verification failed' });
 
-    const wallet = await Wallet.getOrCreate(req.user._id);
+    const wallet = await Wallet.getOrCreate(req.userId);
     await wallet.credit(Number(amount), 'add_money', `Added ₹${amount} via Razorpay`, { razorpayPaymentId: razorpay_payment_id });
     res.json({ success: true, balance: wallet.balance });
   } catch (err) { res.status(500).json({ message: err.message }); }
@@ -46,7 +46,7 @@ router.post('/add-money/verify', async (req, res) => {
 router.post('/pay', async (req, res) => {
   try {
     const { amount, orderId, description } = req.body;
-    const wallet = await Wallet.getOrCreate(req.user._id);
+    const wallet = await Wallet.getOrCreate(req.userId);
     await wallet.debit(Number(amount), 'order_payment', description || `Order payment ₹${amount}`, { orderId });
     res.json({ success: true, balance: wallet.balance });
   } catch (err) { res.status(400).json({ message: err.message }); }
@@ -59,14 +59,16 @@ router.post('/transfer', async (req, res) => {
     const amt = Number(amount);
     if (!toEmail || !amt || amt < 1) return res.status(400).json({ message: 'Valid email and amount required' });
     const User = require('../models/User');
+    const sender = await User.findById(req.userId);
+    if (!sender) return res.status(401).json({ message: 'Not authenticated' });
     const toUser = await User.findOne({ email: toEmail.toLowerCase() });
     if (!toUser) return res.status(404).json({ message: 'No Sheen Bazaar user with that email' });
-    if (String(toUser._id) === String(req.user._id)) return res.status(400).json({ message: "You can't transfer to yourself" });
+    if (String(toUser._id) === String(req.userId)) return res.status(400).json({ message: "You can't transfer to yourself" });
 
-    const fromWallet = await Wallet.getOrCreate(req.user._id);
+    const fromWallet = await Wallet.getOrCreate(req.userId);
     const toWallet = await Wallet.getOrCreate(toUser._id);
     await fromWallet.debit(amt, 'transfer_out', `Sent ₹${amt} to ${toUser.name} (${toUser.email})`);
-    await toWallet.credit(amt, 'transfer_in', `Received ₹${amt} from ${req.user.name} (${req.user.email})`);
+    await toWallet.credit(amt, 'transfer_in', `Received ₹${amt} from ${sender.name} (${sender.email})`);
     res.json({ success: true, balance: fromWallet.balance });
   } catch (err) { res.status(400).json({ message: err.message }); }
 });
