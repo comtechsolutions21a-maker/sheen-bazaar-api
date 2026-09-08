@@ -35,6 +35,24 @@ app.use(express.json({ limit: '8mb' }));
 // Health-check — useful for Render's uptime monitor.
 app.get('/api/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
+// ⚠️ TEMPORARY — one-time admin promotion route, since Render's free plan has
+// no Shell access to run scripts/makeAdmin.js directly. Protected by a secret
+// query param so it can't be triggered by anyone who doesn't know it.
+// DELETE THIS ENTIRE BLOCK (and remove the import above it) once you've used
+// it — it should never stay live on a production site.
+const User = require('./models/User');
+app.get('/api/one-time-make-admin', async (req, res) => {
+  const { email, secret } = req.query;
+  if (secret !== process.env.JWT_SECRET) return res.status(403).json({ message: 'Invalid secret' });
+  if (!email) return res.status(400).json({ message: 'Provide ?email=youremail@example.com' });
+  const user = await User.findOne({ email: String(email).toLowerCase() });
+  if (!user) return res.status(404).json({ message: `No account found with email: ${email}` });
+  const previousRole = user.role;
+  user.role = 'admin';
+  await user.save();
+  res.json({ success: true, message: `${user.email} promoted from "${previousRole}" to "admin". DELETE this route from server.js now.` });
+});
+
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/cart', cartRoutes);
@@ -59,27 +77,6 @@ app.use((err, req, res, next) => {
     message: 'Something went wrong',
     ...(isDev && { error: err.message }),
   });
-});
-
-// Safety net: an uncaught error thrown inside an async route handler (e.g. a
-// bug like req.user being undefined, or a bad value reaching a database
-// query) does NOT get caught by the app.use((err, req, res, next) => ...)
-// middleware above — Express only catches errors passed to next(err) or
-// thrown synchronously. An uncaught exception in async code instead crashes
-// the entire Node process, taking down every single request being served at
-// that moment (this is exactly what was happening: one broken route was
-// intermittently killing the whole server, which looked like random,
-// unrelated features — including payments — failing).
-//
-// These two handlers log the real error for debugging but keep the process
-// alive, so one bad request can no longer take the whole site down. Fixing
-// the actual bugs (as done throughout routes/*.js) remains the real fix —
-// this is a backstop for whatever slips through in the future.
-process.on('uncaughtException', (err) => {
-  console.error('[UNCAUGHT EXCEPTION] — server stayed alive, but this needs fixing:', err);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[UNHANDLED REJECTION] — server stayed alive, but this needs fixing:', reason);
 });
 
 const PORT = process.env.PORT || 5000;
