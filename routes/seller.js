@@ -65,11 +65,16 @@ router.put('/products/:id', async (req, res) => {
   const product = await Product.findOne({ id: Number(req.params.id), seller: req.user._id });
   if (!product) return res.status(404).json({ message: 'Listing not found' });
 
+  const wasOutOfStock = product.stock === 0;
   const fields = ['name', 'icon', 'image', 'price', 'old', 'rating', 'badge', 'cat', 'desc', 'stock', 'active'];
   fields.forEach((f) => {
     if (req.body[f] !== undefined) product[f] = req.body[f];
   });
   await product.save();
+  if (wasOutOfStock && product.stock > 0) {
+    const { notifyBackInStock } = require('../utils/stockAlerts');
+    notifyBackInStock(product).catch((err) => console.error('notifyBackInStock failed:', err.message));
+  }
   res.json(product);
 });
 
@@ -187,26 +192,16 @@ router.patch('/orders/:id/status', async (req, res) => {
     // platform's commission and the supplier's payout now.
     await applyCommission(order);
 
-    // Refer & Earn: reward on this customer's first paid order (COD counts too)
+    // Refer & Earn: mark this customer's first paid order (COD counts too) so
+    // admins can see who's eligible for a referral reward and follow up.
     try {
       const User = require('../models/User');
       const orderUser = await User.findById(order.user);
       if (orderUser?.referredBy && !orderUser.referralRewardGiven) {
-        const Settings = require('../models/Settings');
-        const Wallet = require('../models/Wallet');
-        const settings = await Settings.get();
-        const rewardAmount = settings.referralRewardAmount || 50;
-        const referrer = await User.findById(orderUser.referredBy);
-        if (referrer) {
-          const refereeWallet = await Wallet.getOrCreate(orderUser._id);
-          await refereeWallet.credit(rewardAmount, 'cashback', `Welcome bonus — referred by ${referrer.name}`);
-          const referrerWallet = await Wallet.getOrCreate(referrer._id);
-          await referrerWallet.credit(rewardAmount, 'cashback', `Referral reward — ${orderUser.name} placed their first order`);
-          orderUser.referralRewardGiven = true;
-          await orderUser.save();
-        }
+        orderUser.referralRewardGiven = true;
+        await orderUser.save();
       }
-    } catch (refErr) { console.error('Referral reward failed:', refErr.message); }
+    } catch (refErr) { console.error('Referral tracking failed:', refErr.message); }
   }
 
   await order.save();

@@ -59,6 +59,12 @@ const productSchema = new mongoose.Schema({
   // Seller
   seller: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   stock: { type: Number, default: 100 },
+  // People waiting to be emailed the moment this product is restocked.
+  stockAlerts: [{
+    email: { type: String, required: true },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    createdAt: { type: Date, default: Date.now },
+  }],
   active: { type: Boolean, default: true },
   approved: { type: Boolean, default: true }, // admin can unapprove
   featured: { type: Boolean, default: false },

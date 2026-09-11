@@ -17,11 +17,19 @@ const userSchema = new mongoose.Schema(
 
     // Cart is stored server-side as { productId: qty } so it persists across devices.
     cart: { type: Map, of: Number, default: {} },
+    cartUpdatedAt: { type: Date, default: null },
+    lastAbandonedCartEmailAt: { type: Date, default: null },
 
     role: { type: String, enum: ['customer', 'seller', 'reseller', 'admin'], default: 'customer', index: true },
 
     // Seller-only fields
     businessName: { type: String, default: '' },
+    // Business registration numbers — all optional since not every seller has
+    // GST/MSME registration, but sellers who do can display/verify them.
+    gstNumber: { type: String, default: '' },
+    panNumber: { type: String, default: '' },
+    msmeNumber: { type: String, default: '' }, // Udyam/MSME registration number
+    businessRegistrationNumber: { type: String, default: '' }, // Shop Act licence, CIN, trade licence, etc.
     // Sellers start unapproved so an admin can vet them before their listings go live.
     sellerApproved: { type: Boolean, default: false },
     membershipTier: { type: String, enum: ['Free', 'Basic', 'Pro', 'VIP'], default: 'Free' },
@@ -80,6 +88,10 @@ userSchema.methods.toSafeJSON = function () {
     avatar: this.avatar,
     role: this.role,
     businessName: this.businessName,
+    gstNumber: this.gstNumber,
+    panNumber: this.panNumber,
+    msmeNumber: this.msmeNumber,
+    businessRegistrationNumber: this.businessRegistrationNumber,
     sellerApproved: this.sellerApproved,
     membershipTier: this.membershipTier,
     banned: this.banned,

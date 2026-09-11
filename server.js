@@ -11,9 +11,9 @@ const sellerRoutes = require('./routes/seller');
 const resellerRoutes = require('./routes/reseller');
 const adminRoutes = require('./routes/admin');
 const publicRoutes = require('./routes/public');
-const walletRoutes = require('./routes/wallet');
 const feedbackRoutes = require('./routes/feedback');
 const chatRoutes = require('./routes/chat');
+const { startAbandonedCartJob } = require('./utils/abandonedCart');
 
 const app = express();
 
@@ -64,7 +64,6 @@ app.use('/api/reseller', resellerRoutes);
 // path prefix and Express matches routes in registration order.
 app.use('/api/admin', publicRoutes);
 app.use('/api/admin', adminRoutes);
-app.use('/api/wallet', walletRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/chat', chatRoutes);
 
@@ -83,4 +82,5 @@ const PORT = process.env.PORT || 5000;
 
 connectDB().then(() => {
   app.listen(PORT, '0.0.0.0', () => console.log(`Sheen Bazaar API running on port ${PORT}`));
+  startAbandonedCartJob();
 });

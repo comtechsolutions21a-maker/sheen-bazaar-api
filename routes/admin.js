@@ -151,9 +151,14 @@ router.post('/products', async (req, res) => {
 router.patch('/products/:id', async (req, res) => {
   const product = await Product.findOne({ id: Number(req.params.id) });
   if (!product) return res.status(404).json({ message: 'Product not found' });
+  const wasOutOfStock = product.stock === 0;
   const allowed = ['active','name','price','old','stock','badge','desc','icon','image','cat'];
   allowed.forEach(k => { if (req.body[k] !== undefined) product[k] = req.body[k]; });
   await product.save();
+  if (wasOutOfStock && product.stock > 0) {
+    const { notifyBackInStock } = require('../utils/stockAlerts');
+    notifyBackInStock(product).catch((err) => console.error('notifyBackInStock failed:', err.message));
+  }
   res.json(product);
 });
 
@@ -348,6 +353,10 @@ router.get('/seller-docs/:id', async (req, res) => {
     status: user.sellerDocsStatus,
     rejectReason: user.sellerDocsRejectReason,
     businessName: user.businessName,
+    gstNumber: user.gstNumber,
+    panNumber: user.panNumber,
+    msmeNumber: user.msmeNumber,
+    businessRegistrationNumber: user.businessRegistrationNumber,
     name: user.name,
     email: user.email,
   });
@@ -411,66 +420,21 @@ router.patch('/returns/:id/reject', async (req, res) => {
 });
 
 // PATCH /api/admin/returns/:id/complete — pickup done, item received back, refund processed
+// to the customer's original payment method (card/UPI/bank) via the gateway.
 router.patch('/returns/:id/complete', async (req, res) => {
-  const { refundMethod } = req.body; // 'wallet' | 'original_payment'
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ message: 'Order not found' });
 
-  if (refundMethod === 'wallet') {
-    const Wallet = require('../models/Wallet');
-    const wallet = await Wallet.getOrCreate(order.user);
-    await wallet.credit(order.total, 'refund', `Refund for order #${String(order._id).slice(-8).toUpperCase()}`, { orderId: order._id });
-  } else if (refundMethod === 'original_payment') {
-    // Actually reverse the charge at the gateway that was used, rather than
-    // just recording that a refund "happened" with no money moving.
-    if (!order.transactionId) {
-      return res.status(400).json({ message: 'No transaction ID on this order — cannot refund to original payment method. Use Wallet refund instead.' });
-    }
-    const content = await SiteContent.get();
-    try {
-      if (order.paymentMethod === 'RAZORPAY') {
-        if (!content.razorpayKeyId || !content.razorpayKeySecret) {
-          return res.status(400).json({ message: 'Razorpay is not configured — cannot process this refund.' });
-        }
-        const authHeader = 'Basic ' + Buffer.from(`${content.razorpayKeyId}:${content.razorpayKeySecret}`).toString('base64');
-        const rzpRes = await fetch(`https://api.razorpay.com/v1/payments/${order.transactionId}/refund`, {
-          method: 'POST',
-          headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ amount: Math.round(order.total * 100) }),
-        });
-        const rzpData = await rzpRes.json();
-        if (!rzpRes.ok) return res.status(400).json({ message: rzpData?.error?.description || 'Razorpay refund failed.' });
-      } else if (order.paymentMethod === 'CASHFREE') {
-        if (!content.cashfreeAppId || !content.cashfreeSecretKey) {
-          return res.status(400).json({ message: 'Cashfree is not configured — cannot process this refund.' });
-        }
-        const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
-        const cfRes = await fetch(`${base}/orders/${order.transactionId}/refunds`, {
-          method: 'POST',
-          headers: {
-            'x-api-version': '2023-08-01',
-            'x-client-id': content.cashfreeAppId,
-            'x-client-secret': content.cashfreeSecretKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ refund_amount: order.total, refund_id: `refund_${order._id}` }),
-        });
-        const cfData = await cfRes.json();
-        if (!cfRes.ok) return res.status(400).json({ message: cfData?.message || 'Cashfree refund failed.' });
-      } else {
-        return res.status(400).json({ message: `Refunding a "${order.paymentMethod}" order to its original payment method isn't supported. Use Wallet refund instead.` });
-      }
-    } catch (refundErr) {
-      return res.status(500).json({ message: `Refund request failed: ${refundErr.message}` });
-    }
-  } else {
-    return res.status(400).json({ message: 'refundMethod must be "wallet" or "original_payment"' });
+  const { refundOrderPayment } = require('../utils/refunds');
+  const result = await refundOrderPayment(order);
+  if (!result.success) {
+    return res.status(400).json({ message: result.message });
   }
 
   order.returnStatus = 'completed';
   order.status = 'returned';
-  order.refund = { method: refundMethod, amount: order.total, processedAt: new Date() };
-  order.statusHistory.push({ status: 'returned', note: `Return completed — refunded ₹${order.total} via ${refundMethod}`, updatedBy: 'admin' });
+  order.refund = { method: 'original_payment', amount: order.total, processedAt: new Date() };
+  order.statusHistory.push({ status: 'returned', note: `Return completed — refunded ₹${order.total} to original payment method`, updatedBy: 'admin' });
   await order.save();
   res.json(order);
 });

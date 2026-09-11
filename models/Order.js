@@ -71,6 +71,14 @@ const orderSchema = new mongoose.Schema({
   returnStatus: { type: String, enum: ['none','requested','approved','rejected','completed'], default: 'none' },
   returnRequestedAt: { type: Date, default: null },
   sellerNotes: { type: String, default: '' },
+  // Refund outcome — 'original_payment' when the gateway refund succeeded,
+  // 'manual' when it couldn't be done automatically and support needs to follow up.
+  refund: {
+    method: { type: String, enum: ['original_payment', 'manual'], default: null },
+    amount: { type: Number, default: null },
+    note: { type: String, default: '' },
+    processedAt: { type: Date, default: null },
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Order', orderSchema);

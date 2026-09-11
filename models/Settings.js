@@ -28,7 +28,7 @@ const settingsSchema = new mongoose.Schema(
     gstEnabled: { type: Boolean, default: false },
     gstPercent: { type: Number, default: 18 }, // default GST slab; seller/admin can override per product later
     // Referral program
-    referralRewardAmount: { type: Number, default: 50 }, // wallet credit for both referrer & referee
+    referralRewardAmount: { type: Number, default: 50 }, // shown to users as the referral reward amount; not auto-credited anywhere
   },
   { timestamps: true }
 );

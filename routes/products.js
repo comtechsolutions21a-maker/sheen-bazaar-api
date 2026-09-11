@@ -100,6 +100,30 @@ router.post('/:id/review', auth(true), async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// POST /api/products/:id/notify-stock — subscribe to a back-in-stock email
+router.post('/:id/notify-stock', auth(false), async (req, res) => {
+  try {
+    const product = await Product.findOne({ id: Number(req.params.id) });
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    if (product.stock > 0) return res.status(400).json({ message: 'This product is already in stock' });
+
+    let email = req.body.email;
+    let userId = null;
+    if (req.userId) {
+      const user = await User.findById(req.userId);
+      if (user) { email = user.email; userId = user._id; }
+    }
+    if (!email || !email.includes('@')) return res.status(400).json({ message: 'A valid email is required' });
+
+    const already = product.stockAlerts.some((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (already) return res.json({ subscribed: true, message: "You're already on the list for this product" });
+
+    product.stockAlerts.push({ email: email.toLowerCase(), user: userId });
+    await product.save();
+    res.json({ subscribed: true, message: "We'll email you the moment it's back!" });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 // ─── PRODUCT Q&A ───
 // POST /api/products/:id/question — customer asks a question
 router.post('/:id/question', auth(true), async (req, res) => {

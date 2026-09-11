@@ -203,26 +203,15 @@ router.post('/', async (req, res) => {
       await Product.findOneAndUpdate({ id: item.productId }, { $inc: { stock: -item.qty } });
     }
 
-    // Refer & Earn: on this user's FIRST paid order, reward both them and whoever referred them.
+    // Refer & Earn: mark this user's first paid order so admins can see who's
+    // eligible for a referral reward and follow up (there's no in-app wallet
+    // to auto-credit anymore — see /admin/users for referral stats).
     if (paymentStatus === 'paid' && user.referredBy && !user.referralRewardGiven) {
-      try {
-        const Settings = require('../models/Settings');
-        const Wallet = require('../models/Wallet');
-        const settings = await Settings.get();
-        const rewardAmount = settings.referralRewardAmount || 50;
-        const referrer = await User.findById(user.referredBy);
-        if (referrer) {
-          const refereeWallet = await Wallet.getOrCreate(user._id);
-          await refereeWallet.credit(rewardAmount, 'cashback', `Welcome bonus — referred by ${referrer.name}`);
-          const referrerWallet = await Wallet.getOrCreate(referrer._id);
-          await referrerWallet.credit(rewardAmount, 'cashback', `Referral reward — ${user.name} placed their first order`);
-          user.referralRewardGiven = true;
-          await user.save();
-        }
-      } catch (refErr) { console.error('Referral reward failed:', refErr.message); }
+      user.referralRewardGiven = true;
     }
 
     user.cart = new Map();
+    user.cartUpdatedAt = null;
     await user.save();
 
     // Fire-and-forget: don't make the customer wait on email delivery.
@@ -285,13 +274,18 @@ router.post('/:id/cancel', async (req, res) => {
       await Product.findOneAndUpdate({ id: item.productId }, { $inc: { stock: item.qty } });
     }
 
-    // Refund if already paid
+    // Refund if already paid — straight back to the original payment method
+    // (card/UPI/bank), via the gateway that captured it.
     if (order.paymentStatus === 'paid') {
-      const Wallet = require('../models/Wallet');
-      const wallet = await Wallet.getOrCreate(order.user);
-      await wallet.credit(order.total, 'refund', `Refund for cancelled order #${String(order._id).slice(-8).toUpperCase()}`, { orderId: order._id });
-      order.paymentStatus = 'refunded';
-      order.refund = { method: 'wallet', amount: order.total, processedAt: new Date() };
+      const { refundOrderPayment } = require('../utils/refunds');
+      const result = await refundOrderPayment(order);
+      if (result.success) {
+        order.paymentStatus = 'refunded';
+        order.refund = { method: 'original_payment', amount: order.total, processedAt: new Date() };
+      } else {
+        // Cancellation still goes through; refund needs a manual follow-up.
+        order.refund = { method: 'manual', amount: order.total, note: result.message, processedAt: null };
+      }
     }
 
     await order.save();

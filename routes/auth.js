@@ -449,7 +449,7 @@ router.post('/seller-docs', auth(true), async (req, res) => {
     const user = await User.findById(req.userId);
     if (!user) return res.status(401).json({ message: 'Not authenticated' });
     if (user.role !== 'seller') return res.status(403).json({ message: 'Only seller accounts can submit documents' });
-    const { panCard, aadhaarFront, aadhaarBack, gstCertificate, bankProof, shopPhoto } = req.body;
+    const { panCard, aadhaarFront, aadhaarBack, gstCertificate, bankProof, shopPhoto, gstNumber, panNumber, msmeNumber, businessRegistrationNumber } = req.body;
     if (!panCard || !aadhaarFront || !aadhaarBack || !bankProof) {
       return res.status(400).json({ message: 'PAN card, Aadhaar (front & back) and bank proof are required' });
     }
@@ -460,6 +460,11 @@ router.post('/seller-docs', auth(true), async (req, res) => {
       shopPhoto: shopPhoto || '',
       submittedAt: new Date(),
     };
+    // Registration numbers are typed in separately from the document photos above.
+    if (gstNumber !== undefined) user.gstNumber = gstNumber;
+    if (panNumber !== undefined) user.panNumber = panNumber;
+    if (msmeNumber !== undefined) user.msmeNumber = msmeNumber;
+    if (businessRegistrationNumber !== undefined) user.businessRegistrationNumber = businessRegistrationNumber;
     user.sellerDocsStatus = 'pending';
     user.sellerDocsRejectReason = '';
     await user.save();
@@ -475,6 +480,10 @@ router.get('/seller-docs', auth(true), async (req, res) => {
     rejectReason: user.sellerDocsRejectReason,
     submittedAt: user.sellerDocs?.submittedAt || null,
     sellerApproved: user.sellerApproved,
+    gstNumber: user.gstNumber,
+    panNumber: user.panNumber,
+    msmeNumber: user.msmeNumber,
+    businessRegistrationNumber: user.businessRegistrationNumber,
   });
 });
 
@@ -503,4 +512,41 @@ router.patch('/profile', auth(true), async (req, res) => {
   if (phone !== undefined) user.phone = phone;
   await user.save();
   res.json({ user: user.toSafeJSON() });
+});
+
+// POST /api/auth/upgrade-role — lets an already-logged-in customer become a
+// seller or reseller (or switch back to customer) on their EXISTING account.
+// No new signup/login needed — same email, same order history.
+router.post('/upgrade-role', auth(true), async (req, res) => {
+  try {
+    const { role, businessName } = req.body;
+    if (!['customer', 'seller', 'reseller'].includes(role)) {
+      return res.status(400).json({ message: 'role must be customer, seller or reseller' });
+    }
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(401).json({ message: 'Not authenticated' });
+    if (user.role === 'admin') {
+      return res.status(403).json({ message: 'Admin accounts cannot change role this way' });
+    }
+    if (user.role === role) {
+      return res.json({ user: user.toSafeJSON(), message: `Already a ${role}` });
+    }
+    if (role === 'seller' && !businessName && !user.businessName) {
+      return res.status(400).json({ message: 'Business name is required to become a seller' });
+    }
+
+    user.role = role;
+    if (businessName) user.businessName = businessName;
+    // Any new/renewed seller status starts unapproved — same review step as
+    // a brand-new seller signup, checked via the existing seller-verification flow.
+    if (role === 'seller') user.sellerApproved = false;
+
+    await user.save();
+    // Not strictly required (the JWT only carries the user id, not the role),
+    // but a fresh token keeps things simple and consistent for the frontend.
+    const token = signToken(user._id);
+    res.json({ token, user: user.toSafeJSON() });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update role', error: err.message });
+  }
 });

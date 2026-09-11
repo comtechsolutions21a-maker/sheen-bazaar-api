@@ -83,6 +83,7 @@ router.post('/', async (req, res) => {
   if (next <= 0) user.cart.delete(key);
   else user.cart.set(key, next);
 
+  user.cartUpdatedAt = user.cart.size > 0 ? new Date() : null;
   await user.save();
   res.json(await buildCartResponse(user));
 });
@@ -91,6 +92,7 @@ router.post('/', async (req, res) => {
 router.delete('/:productId', async (req, res) => {
   const user = await User.findById(req.userId);
   user.cart.delete(makeKey(req.params.productId, req.query.resellerId));
+  user.cartUpdatedAt = user.cart.size > 0 ? new Date() : null;
   await user.save();
   res.json(await buildCartResponse(user));
 });
@@ -99,8 +101,10 @@ router.delete('/:productId', async (req, res) => {
 router.delete('/', async (req, res) => {
   const user = await User.findById(req.userId);
   user.cart = new Map();
+  user.cartUpdatedAt = null;
   await user.save();
   res.json(await buildCartResponse(user));
 });
 
 module.exports = router;
+module.exports.buildCartResponse = buildCartResponse;
