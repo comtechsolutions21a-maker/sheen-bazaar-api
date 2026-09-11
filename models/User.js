@@ -7,6 +7,14 @@ const userSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
     phone: { type: String, default: '' },
+    avatar: { type: String, default: '' },
+
+    // Social login IDs — set when the account was created or linked via that
+    // provider. sparse+unique so multiple users can have this field unset.
+    googleId: { type: String, default: undefined, unique: true, sparse: true, index: true },
+    facebookId: { type: String, default: undefined, unique: true, sparse: true, index: true },
+    twitterId: { type: String, default: undefined, unique: true, sparse: true, index: true },
+
     // Cart is stored server-side as { productId: qty } so it persists across devices.
     cart: { type: Map, of: Number, default: {} },
 
@@ -69,6 +77,7 @@ userSchema.methods.toSafeJSON = function () {
     name: this.name,
     email: this.email,
     phone: this.phone,
+    avatar: this.avatar,
     role: this.role,
     businessName: this.businessName,
     sellerApproved: this.sellerApproved,
