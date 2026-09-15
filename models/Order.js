@@ -14,6 +14,11 @@ const orderItemSchema = new mongoose.Schema({
   commissionAmount: { type: Number, default: 0 },
   payoutAmount: { type: Number, default: 0 },
   resellerCommissionAmount: { type: Number, default: 0 },
+  // Marked true once the admin has actually paid the seller their payoutAmount
+  // for this line (outside the app — bank transfer/UPI). Purely a tracking
+  // flag; it doesn't move any money itself.
+  payoutSettled: { type: Boolean, default: false },
+  payoutSettledAt: { type: Date, default: null },
   // Return/refund per item
   returnRequested: { type: Boolean, default: false },
   returnStatus: { type: String, enum: ['none','requested','approved','rejected','completed'], default: 'none' },

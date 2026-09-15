@@ -367,4 +367,64 @@ router.post('/validate-coupon', async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// POST /api/orders/razorpay/create-order — any logged-in customer can create
+// a Razorpay order to pay for their cart. (Previously this lived under
+// /api/admin/razorpay/create-order, which meant only admin accounts could
+// use it — every customer checkout with Razorpay was failing with a 403.)
+router.post('/razorpay/create-order', async (req, res) => {
+  try {
+    const SiteContent = require('../models/SiteContent');
+    const content = await SiteContent.get();
+    if (!content.razorpayKeyId || !content.razorpayKeySecret) {
+      return res.status(400).json({ message: 'Razorpay is not configured. Add keys in Admin → Settings → Payments.' });
+    }
+    const authHeader = 'Basic ' + Buffer.from(`${content.razorpayKeyId}:${content.razorpayKeySecret}`).toString('base64');
+    const rzpRes = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: Math.round(req.body.amount * 100), currency: 'INR', receipt: `receipt_${Date.now()}` }),
+    });
+    const order = await rzpRes.json();
+    if (!rzpRes.ok) return res.status(400).json({ message: order?.error?.description || 'Razorpay order creation failed' });
+    res.json({ orderId: order.id, keyId: content.razorpayKeyId });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// POST /api/orders/cashfree/create-order — same fix as above, for Cashfree.
+router.post('/cashfree/create-order', async (req, res) => {
+  try {
+    const SiteContent = require('../models/SiteContent');
+    const content = await SiteContent.get();
+    if (!content.cashfreeAppId || !content.cashfreeSecretKey) {
+      return res.status(400).json({ message: 'Cashfree is not configured. Add keys in Admin → Settings → Payments.' });
+    }
+    const buyer = await User.findById(req.userId);
+    const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
+    const orderId = `cf_${Date.now()}`;
+    const response = await fetch(`${base}/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-version': '2023-08-01',
+        'x-client-id': content.cashfreeAppId,
+        'x-client-secret': content.cashfreeSecretKey,
+      },
+      body: JSON.stringify({
+        order_id: orderId,
+        order_amount: req.body.amount,
+        order_currency: 'INR',
+        customer_details: {
+          customer_id: String(buyer._id),
+          customer_name: buyer.name,
+          customer_email: buyer.email,
+          customer_phone: buyer.phone || '9999999999',
+        },
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || 'Cashfree order creation failed');
+    res.json({ orderId, paymentSessionId: data.payment_session_id, liveMode: content.cashfreeLiveMode });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 module.exports = router;

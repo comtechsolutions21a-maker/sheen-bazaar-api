@@ -121,6 +121,7 @@ router.get('/earnings', async (req, res) => {
     // been split yet, so payout shows as the full (unsettled) amount.
     const commission = myItems.reduce((sum, i) => sum + (i.commissionAmount || 0), 0);
     const payoutAmount = o.paymentStatus === 'paid' ? myItems.reduce((sum, i) => sum + i.payoutAmount, 0) : grossAmount;
+    const payoutSettled = o.paymentStatus === 'paid' && myItems.every((i) => i.payoutSettled);
 
     if (o.paymentStatus === 'paid') {
       paidTotal += payoutAmount;
@@ -136,6 +137,7 @@ router.get('/earnings', async (req, res) => {
       grossAmount,
       commission,
       amount: payoutAmount,
+      payoutSettled,
       commissionPercent: o.commissionPercent,
       paymentMethod: o.paymentMethod,
       paymentStatus: o.paymentStatus,

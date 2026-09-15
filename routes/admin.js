@@ -248,17 +248,11 @@ router.delete('/notifications/:id', async (req, res) => {
 });
 
 // ─── RAZORPAY ───
-router.post('/razorpay/create-order', async (req, res) => {
-  try {
-    const content = await SiteContent.get();
-    if (!content.razorpayKeyId || !content.razorpayKeySecret) return res.status(400).json({ message: 'Razorpay not configured. Add keys in Admin → Settings → Payments.' });
-    const Razorpay = require('razorpay');
-    const razorpay = new Razorpay({ key_id: content.razorpayKeyId, key_secret: content.razorpayKeySecret });
-    const order = await razorpay.orders.create({ amount: req.body.amount * 100, currency: 'INR', receipt: `receipt_${Date.now()}` });
-    res.json({ orderId: order.id, keyId: content.razorpayKeyId });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
+// NOTE: order creation lives in routes/orders.js now (any logged-in customer
+// needs it, not just admins) — this file keeps only the /verify route below,
+// which is currently unused by the frontend (order placement verifies the
+// payment signature itself in routes/orders.js) but is kept for reference /
+// any future direct-verify flow.
 router.post('/razorpay/verify', async (req, res) => {
   try {
     const content = await SiteContent.get();
@@ -283,38 +277,7 @@ router.post('/razorpay/verify', async (req, res) => {
 
 
 // ─── CASHFREE ───
-router.post('/cashfree/create-order', async (req, res) => {
-  try {
-    const content = await SiteContent.get();
-    if (!content.cashfreeAppId || !content.cashfreeSecretKey) return res.status(400).json({ message: 'Cashfree not configured. Add keys in Admin → Payments.' });
-    const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
-    const orderId = `cf_${Date.now()}`;
-    const response = await fetch(`${base}/orders`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-version': '2023-08-01',
-        'x-client-id': content.cashfreeAppId,
-        'x-client-secret': content.cashfreeSecretKey,
-      },
-      body: JSON.stringify({
-        order_id: orderId,
-        order_amount: req.body.amount,
-        order_currency: 'INR',
-        customer_details: {
-          customer_id: String(req.user._id),
-          customer_name: req.user.name,
-          customer_email: req.user.email,
-          customer_phone: req.user.phone || '9999999999',
-        },
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message || 'Cashfree order creation failed');
-    res.json({ orderId, paymentSessionId: data.payment_session_id, liveMode: content.cashfreeLiveMode });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
+// Order creation for Cashfree also moved to routes/orders.js — see note above.
 router.post('/cashfree/verify', async (req, res) => {
   try {
     const content = await SiteContent.get();
@@ -342,6 +305,90 @@ router.post('/cashfree/verify', async (req, res) => {
     }
     res.json({ success: true, paymentId: successPayment.cf_payment_id });
   } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// ─── SELLER PAYOUTS ───
+// Tracking only — no money actually moves here. This just lets the admin
+// record which sellers have already been paid (bank transfer/UPI, done
+// outside the app) so nothing gets double-paid or forgotten.
+
+// GET /api/admin/payouts — every seller who has at least one paid order,
+// grouped with their pending (unsettled) and already-settled totals.
+router.get('/payouts', async (req, res) => {
+  const orders = await Order.find({ paymentStatus: 'paid', 'items.seller': { $ne: null } })
+    .populate('items.seller', 'name email businessName')
+    .sort({ createdAt: -1 });
+
+  const bySeller = new Map();
+  for (const order of orders) {
+    for (const item of order.items) {
+      if (!item.seller) continue;
+      const sellerId = String(item.seller._id);
+      if (!bySeller.has(sellerId)) {
+        bySeller.set(sellerId, {
+          sellerId,
+          name: item.seller.name,
+          email: item.seller.email,
+          businessName: item.seller.businessName,
+          pendingAmount: 0,
+          settledAmount: 0,
+          orders: new Map(),
+        });
+      }
+      const s = bySeller.get(sellerId);
+      if (item.payoutSettled) s.settledAmount += item.payoutAmount;
+      else s.pendingAmount += item.payoutAmount;
+
+      if (!s.orders.has(String(order._id))) {
+        s.orders.set(String(order._id), {
+          orderId: order._id,
+          createdAt: order.createdAt,
+          paymentMethod: order.paymentMethod,
+          pendingAmount: 0,
+          settledAmount: 0,
+          allSettled: true,
+        });
+      }
+      const o = s.orders.get(String(order._id));
+      if (item.payoutSettled) o.settledAmount += item.payoutAmount;
+      else { o.pendingAmount += item.payoutAmount; o.allSettled = false; }
+    }
+  }
+
+  const result = [...bySeller.values()]
+    .map((s) => ({ ...s, orders: [...s.orders.values()].sort((a, b) => b.createdAt - a.createdAt) }))
+    .sort((a, b) => b.pendingAmount - a.pendingAmount);
+
+  res.json(result);
+});
+
+// PATCH /api/admin/payouts/settle — body: { sellerId, orderId? }
+// With orderId: settles just that seller's items in that one order.
+// Without orderId: settles every currently-unsettled paid item for that seller.
+router.patch('/payouts/settle', async (req, res) => {
+  const { sellerId, orderId } = req.body;
+  if (!sellerId) return res.status(400).json({ message: 'sellerId is required' });
+
+  const filter = { paymentStatus: 'paid', 'items.seller': sellerId };
+  if (orderId) filter._id = orderId;
+  const orders = await Order.find(filter);
+
+  let settledCount = 0;
+  const now = new Date();
+  for (const order of orders) {
+    let changed = false;
+    order.items.forEach((item) => {
+      if (item.seller && String(item.seller) === String(sellerId) && !item.payoutSettled) {
+        item.payoutSettled = true;
+        item.payoutSettledAt = now;
+        changed = true;
+        settledCount += 1;
+      }
+    });
+    if (changed) await order.save();
+  }
+
+  res.json({ success: true, itemsSettled: settledCount });
 });
 
 // ─── SELLER KYC DOCUMENTS ───
