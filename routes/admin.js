@@ -46,6 +46,51 @@ router.get('/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// GET /api/admin/visitors — anonymous traffic analytics (page views + unique
+// visitors), sourced from the Visit collection logged by the public
+// track-visit endpoint. No personal data involved — just paths and a random
+// per-browser id.
+router.get('/visitors', async (req, res) => {
+  try {
+    const Visit = require('../models/Visit');
+    const now = new Date();
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const monthStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const fourteenDaysStart = new Date(); fourteenDaysStart.setHours(0, 0, 0, 0); fourteenDaysStart.setDate(fourteenDaysStart.getDate() - 13);
+
+    const [totalToday, totalWeek, totalMonth, totalAllTime, uniqueToday, uniqueWeek, uniqueMonth, uniqueAllTime, recentVisits] = await Promise.all([
+      Visit.countDocuments({ createdAt: { $gte: todayStart } }),
+      Visit.countDocuments({ createdAt: { $gte: weekStart } }),
+      Visit.countDocuments({ createdAt: { $gte: monthStart } }),
+      Visit.countDocuments({}),
+      Visit.distinct('visitorId', { createdAt: { $gte: todayStart } }),
+      Visit.distinct('visitorId', { createdAt: { $gte: weekStart } }),
+      Visit.distinct('visitorId', { createdAt: { $gte: monthStart } }),
+      Visit.distinct('visitorId', {}),
+      Visit.find({ createdAt: { $gte: fourteenDaysStart } }).select('path createdAt'),
+    ]);
+
+    // Bucket the last 14 days for a simple bar chart, and tally top pages
+    // over that same window.
+    const byDay = {};
+    const byPath = {};
+    for (const v of recentVisits) {
+      const dayLabel = new Date(v.createdAt).toLocaleDateString('default', { month: 'short', day: 'numeric' });
+      byDay[dayLabel] = (byDay[dayLabel] || 0) + 1;
+      byPath[v.path] = (byPath[v.path] || 0) + 1;
+    }
+    const topPages = Object.entries(byPath).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([path, count]) => ({ path, count }));
+
+    res.json({
+      totalToday, totalWeek, totalMonth, totalAllTime,
+      uniqueToday: uniqueToday.length, uniqueWeek: uniqueWeek.length, uniqueMonth: uniqueMonth.length, uniqueAllTime: uniqueAllTime.length,
+      last14Days: byDay,
+      topPages,
+    });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 // ─── SETTINGS ───
 router.get('/settings', async (req, res) => { res.json(await Settings.get()); });
 router.put('/settings', async (req, res) => {

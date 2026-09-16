@@ -67,4 +67,23 @@ router.get('/public/social', async (req, res) => {
   });
 });
 
+// POST /api/admin/public/track-visit — anonymous page-view tracking for the
+// admin analytics dashboard. No auth, no personal info — just a path and a
+// random visitor id the frontend keeps in localStorage.
+router.post('/public/track-visit', async (req, res) => {
+  try {
+    const { path, visitorId } = req.body;
+    if (!path || !visitorId) return res.status(400).json({ message: 'path and visitorId are required' });
+    const Visit = require('../models/Visit');
+    // Fire-and-forget from the frontend's perspective — but we still await
+    // here so a DB error doesn't become an unhandled rejection.
+    await Visit.create({ path: String(path).slice(0, 200), visitorId: String(visitorId).slice(0, 100) });
+    res.status(204).end();
+  } catch (err) {
+    // Never let analytics break the page — just log it.
+    console.error('track-visit failed:', err.message);
+    res.status(204).end();
+  }
+});
+
 module.exports = router;
