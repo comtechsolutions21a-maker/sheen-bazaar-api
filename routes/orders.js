@@ -10,6 +10,37 @@ const { applyCommission } = require('../utils/commission');
 const Settings = require('../models/Settings');
 
 const router = express.Router();
+
+// POST /api/orders/razorpay/callback — Razorpay posts here (not JSON, form-
+// encoded, and with NO auth header we control) after a redirect-mode
+// checkout finishes. This has to sit BEFORE router.use(auth(true)) below,
+// since Razorpay's own redirect can't carry our Bearer token.
+//
+// Why redirect mode at all: the normal in-page "handler" callback depends on
+// this tab's JS still being alive when the customer returns from their UPI
+// app (GPay/PhonePe/etc). On many Android phones, backgrounding the tab to
+// pay in another app gets the tab's renderer killed by the OS for memory —
+// so when they come back, the JS callback never fires and they see a dead/
+// crashed page instead of their order confirmation. Redirect mode has
+// Razorpay itself navigate the browser back to a real URL once payment is
+// done, which survives that kind of background-process kill far better than
+// waiting on an in-memory JS Promise.
+router.post('/razorpay/callback', express.urlencoded({ extended: true }), (req, res) => {
+  const frontendUrl = process.env.CLIENT_ORIGIN?.split(',')[0] || 'http://localhost:5173';
+  const { razorpay_payment_id, razorpay_order_id, razorpay_signature, error } = req.body;
+  if (error) {
+    return res.redirect(`${frontendUrl}/checkout?payment_error=${encodeURIComponent('Payment failed or was cancelled')}`);
+  }
+  if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+    return res.redirect(`${frontendUrl}/checkout?payment_error=${encodeURIComponent('Payment response was incomplete')}`);
+  }
+  // Signature verification itself happens in POST /api/orders below, right
+  // before the order is created — this route's only job is getting these
+  // three values back to the SPA as a real URL the browser can reload.
+  const qs = new URLSearchParams({ razorpay_payment_id, razorpay_order_id, razorpay_signature }).toString();
+  res.redirect(`${frontendUrl}/checkout?${qs}`);
+});
+
 router.use(auth(true));
 
 // Notifies every seller who has at least one item in this order — via email,
@@ -401,6 +432,7 @@ router.post('/cashfree/create-order', async (req, res) => {
     const buyer = await User.findById(req.userId);
     const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
     const orderId = `cf_${Date.now()}`;
+    const frontendUrl = process.env.CLIENT_ORIGIN?.split(',')[0] || 'http://localhost:5173';
     const response = await fetch(`${base}/orders`, {
       method: 'POST',
       headers: {
@@ -419,6 +451,13 @@ router.post('/cashfree/create-order', async (req, res) => {
           customer_email: buyer.email,
           customer_phone: buyer.phone || '9999999999',
         },
+        // Same reasoning as the Razorpay redirect fix: UPI intent payments
+        // background this tab to open GPay/PhonePe/etc, and Android often
+        // kills a backgrounded tab's JS — losing an in-page callback and
+        // leaving a crashed/blank page. return_url makes Cashfree itself
+        // navigate the browser to a real URL once payment finishes, which
+        // survives that kind of background kill far better.
+        order_meta: { return_url: `${frontendUrl}/checkout?cashfree_order_id={order_id}` },
       }),
     });
     const data = await response.json();
