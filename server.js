@@ -20,14 +20,24 @@ const app = express();
 // CORS — only allow requests from the configured frontend origin.
 // In production, CLIENT_ORIGIN must be set to your Netlify URL.
 const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(s => s.trim());
-app.use(cors({
+const strictCors = cors({
   origin: (origin, cb) => {
     // Allow requests with no origin (curl, Postman, server-to-server)
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
     cb(new Error(`CORS blocked: ${origin} is not in CLIENT_ORIGIN`));
   },
   credentials: true,
-}));
+});
+app.use((req, res, next) => {
+  // Razorpay's redirect-mode callback is a real cross-site form POST from
+  // Razorpay's own checkout domain, not a script-based fetch from some
+  // unknown frontend — so it isn't something CORS is meant to gate, and the
+  // browser never reads its response via JS anyway. The strict check above
+  // was rejecting Razorpay's own payment confirmation outright (after the
+  // customer had already paid), so this one path is exempt from it.
+  if (req.path === '/api/orders/razorpay/callback') return next();
+  return strictCors(req, res, next);
+});
 
 // Raised limit so sellers can upload product photos as base64 data URLs.
 app.use(express.json({ limit: '8mb' }));
