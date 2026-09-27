@@ -178,55 +178,11 @@ router.delete('/users/:id', async (req, res) => {
   res.json({ deleted: true });
 });
 
-// POST /api/admin/users/merge — folds one duplicate account into another.
-// Why this exists: the site has several separate sign-in paths (email+OTP,
-// email+password, Google, Facebook, X, phone+OTP) that each look the
-// customer up by a different field. If a customer used two different paths
-// with even a slightly different email/phone, two separate accounts get
-// created — and since every order is tied to a single account id, their
-// order history silently splits between the two: whichever account they
-// happen to be logged into at the moment only ever shows ITS OWN orders,
-// making the other account's orders look "missing" even though nothing was
-// deleted. This route reassigns every order (and merges saved addresses)
-// from the duplicate account onto the one to keep, then removes the
-// duplicate — so the customer's full order history lives in one place again.
-router.post('/users/merge', async (req, res) => {
-  try {
-    const { keepId, mergeId } = req.body;
-    if (!keepId || !mergeId) return res.status(400).json({ message: 'keepId and mergeId are required' });
-    if (String(keepId) === String(mergeId)) return res.status(400).json({ message: 'Cannot merge an account into itself' });
-
-    const [keepUser, mergeUser] = await Promise.all([User.findById(keepId), User.findById(mergeId)]);
-    if (!keepUser) return res.status(404).json({ message: 'Account to keep was not found' });
-    if (!mergeUser) return res.status(404).json({ message: 'Duplicate account was not found' });
-
-    const orderResult = await Order.updateMany({ user: mergeUser._id }, { $set: { user: keepUser._id } });
-
-    // Carry over any saved addresses the duplicate account had that the kept
-    // account doesn't already have, so nothing about the customer is lost.
-    if (mergeUser.addresses?.length) {
-      const existingLines = new Set((keepUser.addresses || []).map(a => `${a.addressLine}|${a.pincode}`));
-      for (const addr of mergeUser.addresses) {
-        const key = `${addr.addressLine}|${addr.pincode}`;
-        if (!existingLines.has(key)) {
-          keepUser.addresses.push({ ...addr.toObject(), isDefault: false, _id: undefined });
-          existingLines.add(key);
-        }
-      }
-      await keepUser.save();
-    }
-
-    await User.deleteOne({ _id: mergeUser._id });
-
-    res.json({
-      success: true,
-      ordersMoved: orderResult.modifiedCount,
-      message: `Moved ${orderResult.modifiedCount} order(s) from "${mergeUser.email}" into "${keepUser.email}", and removed the duplicate account.`,
-    });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
+// NOTE: the old manual "merge duplicate accounts" tool that used to live here
+// has been removed. Duplicate-account order splitting is now handled
+// automatically in routes/orders.js (see getLinkedUserIds), which combines
+// orders from any accounts that share the same phone number — no admin
+// action needed.
 
 // ─── PRODUCTS ───
 router.get('/products', async (req, res) => {

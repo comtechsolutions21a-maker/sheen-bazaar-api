@@ -11,6 +11,28 @@ const Settings = require('../models/Settings');
 
 const router = express.Router();
 
+// The site has several separate sign-in paths (email+OTP, email+password,
+// Google, Facebook, X, phone+OTP) that each look a customer up by a
+// different field, so the same person can end up with more than one
+// account if they signed in differently on different visits — and since
+// every order is tied to a single account id, their order history would
+// otherwise silently split between accounts. Instead of requiring an admin
+// to manually merge duplicates, every order lookup below first resolves
+// ALL accounts that share the current user's phone number (the one field
+// that's genuinely tied to the person rather than to a particular login
+// method) and includes orders from every one of them automatically — so a
+// customer sees their full order history no matter which of their
+// duplicate accounts they happen to be logged into.
+async function getLinkedUserIds(userId) {
+  const me = await User.findById(userId).select('phone');
+  const ids = [userId];
+  if (me?.phone) {
+    const siblings = await User.find({ phone: me.phone, _id: { $ne: userId } }).select('_id');
+    ids.push(...siblings.map((u) => u._id));
+  }
+  return ids;
+}
+
 // POST /api/orders/razorpay/callback — Razorpay posts here (not JSON, form-
 // encoded, and with NO auth header we control) after a redirect-mode
 // checkout finishes. This has to sit BEFORE router.use(auth(true)) below,
@@ -254,15 +276,19 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/orders  -- current user's order history
+// GET /api/orders  -- current user's order history (includes any other
+// account of theirs that shares the same phone number, so old orders don't
+// appear to "vanish" just because they're logged into a different account)
 router.get('/', async (req, res) => {
-  const orders = await Order.find({ user: req.userId }).sort({ createdAt: -1 });
+  const userIds = await getLinkedUserIds(req.userId);
+  const orders = await Order.find({ user: { $in: userIds } }).sort({ createdAt: -1 });
   res.json(orders);
 });
 
 // GET /api/orders/:id
 router.get('/:id', async (req, res) => {
-  const order = await Order.findOne({ _id: req.params.id, user: req.userId });
+  const userIds = await getLinkedUserIds(req.userId);
+  const order = await Order.findOne({ _id: req.params.id, user: { $in: userIds } });
   if (!order) return res.status(404).json({ message: 'Order not found' });
   res.json(order);
 });
@@ -271,7 +297,8 @@ router.get('/:id', async (req, res) => {
 router.post('/:id/return', async (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.status(400).json({ message: 'Please tell us why you want to return this order' });
-  const order = await Order.findOne({ _id: req.params.id, user: req.userId });
+  const userIds = await getLinkedUserIds(req.userId);
+  const order = await Order.findOne({ _id: req.params.id, user: { $in: userIds } });
   if (!order) return res.status(404).json({ message: 'Order not found' });
   if (order.status !== 'delivered') return res.status(400).json({ message: 'Only delivered orders can be returned' });
   if (order.returnStatus !== 'none') return res.status(400).json({ message: 'A return has already been requested for this order' });
@@ -289,7 +316,8 @@ router.post('/:id/return', async (req, res) => {
 // POST /api/orders/:id/cancel — customer cancels an order before it ships
 router.post('/:id/cancel', async (req, res) => {
   try {
-    const order = await Order.findOne({ _id: req.params.id, user: req.userId });
+    const userIds = await getLinkedUserIds(req.userId);
+    const order = await Order.findOne({ _id: req.params.id, user: { $in: userIds } });
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
     // Only a still-pending order (not yet confirmed by the seller) can be
