@@ -292,9 +292,13 @@ router.post('/:id/cancel', async (req, res) => {
     const order = await Order.findOne({ _id: req.params.id, user: req.userId });
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    const cancellableStatuses = ['placed', 'confirmed', 'packed'];
+    // Only a still-pending order (not yet confirmed by the seller) can be
+    // cancelled by the customer. Once the seller has confirmed or packed it,
+    // they've already started fulfilling it, so cancellation is closed —
+    // the customer can still request a return once it's delivered.
+    const cancellableStatuses = ['placed'];
     if (!cancellableStatuses.includes(order.status)) {
-      return res.status(400).json({ message: 'This order can no longer be cancelled — it has already shipped. You can request a return once delivered instead.' });
+      return res.status(400).json({ message: 'This order has already been confirmed and can no longer be cancelled. You can request a return once delivered instead.' });
     }
 
     order.status = 'cancelled';
