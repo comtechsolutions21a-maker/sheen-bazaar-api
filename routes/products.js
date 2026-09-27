@@ -23,7 +23,15 @@ router.get('/', async (req, res) => {
 
     let query = Product.find(filter);
     if (sort === 'price-low') query = query.sort({ price: 1 });
-    if (sort === 'price-high') query = query.sort({ price: -1 });
+    else if (sort === 'price-high') query = query.sort({ price: -1 });
+    // Default: newest-first. Without an explicit sort, MongoDB returns
+    // products in whatever order they happen to be stored in — usually
+    // oldest-first — so a product a seller just added would sit at the very
+    // end of the list. The Home page only shows the first 10 results
+    // (see Home.jsx), so new listings could go months without ever showing
+    // up there even though they were visible on the full Shop page. Newest-
+    // first fixes that at the source for every page that calls this route.
+    else query = query.sort({ createdAt: -1 });
 
     const products = await query.exec();
     res.json(products);
