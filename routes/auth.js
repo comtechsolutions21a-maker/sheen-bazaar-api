@@ -27,8 +27,19 @@ function signToken(userId) {
 
 // Generate 6-digit OTP
 function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return String(require('crypto').randomInt(100000, 1000000)); // secure random 6 digits
 }
+
+// Abuse protection: stops code-spamming (which would burn the daily email /
+// SMS quota) and unlimited guessing by requesting new codes over and over.
+const { limit } = require('../utils/rateLimit');
+const otpTarget = (field) => (req) => String(req.body?.[field] || '').trim().toLowerCase() || null;
+const otpLimits = (field) => [
+  limit(`otp-cool-${field}`, { max: 1, windowMs: 45e3, keyFn: otpTarget(field), message: 'Please wait {wait} before asking for another code.' }),
+  limit(`otp-hour-${field}`, { max: 5, windowMs: 3600e3, keyFn: otpTarget(field), message: 'Too many codes requested. Please try again in {wait}.' }),
+  limit('otp-ip', { max: 20, windowMs: 3600e3, message: 'Too many codes requested from this network. Please try again in {wait}.' }),
+];
+const loginLimit = limit('login', { max: 10, windowMs: 15 * 60e3, keyFn: (req) => `${req.ip}:${String(req.body?.email || req.body?.phone || '').toLowerCase()}`, message: 'Too many login attempts. Please wait {wait} and try again.' });
 
 // Send OTP via Fast2SMS
 async function sendOTP(phone, otp) {
@@ -45,7 +56,7 @@ async function sendOTP(phone, otp) {
 }
 
 // POST /api/auth/send-otp
-router.post('/send-otp', async (req, res) => {
+router.post('/send-otp', ...otpLimits('phone'), async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone || phone.length !== 10) {
@@ -149,7 +160,7 @@ router.post('/signup', async (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ message: 'Email and password are required' });
@@ -362,10 +373,10 @@ module.exports = router;
 const emailOtpStore = new Map();
 
 // POST /api/auth/send-email-otp
-router.post('/send-email-otp', async (req, res) => {
+router.post('/send-email-otp', ...otpLimits('email'), async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ message: 'Email is required' });
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) return res.status(400).json({ message: 'Enter a valid email address' });
 
     const otp = generateOTP();
     const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes

@@ -161,7 +161,7 @@ router.get('/:id/related', async (req, res) => {
 // One review per customer per product — posting again replaces their old one.
 const MAX_REVIEW_PHOTOS = 3;
 const MAX_PHOTO_BYTES = 600 * 1024; // the app compresses photos to ~150 KB before upload
-router.post('/:id/review', auth(true), async (req, res) => {
+router.post('/:id/review', auth(true), require('../utils/rateLimit').limit('review', { max: 10, windowMs: 3600e3, keyFn: (req) => req.userId }), async (req, res) => {
   try {
     const rating = Number(req.body.rating);
     const comment = String(req.body.comment || '').trim().slice(0, 2000);

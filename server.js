@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+require('./utils/asyncErrors'); // keep one bad request from crashing the whole server
 const cors = require('cors');
 const connectDB = require('./config/db');
 
@@ -19,6 +20,7 @@ const { startAbandonedCartJob } = require('./utils/abandonedCart');
 const { startCampaignJob } = require('./utils/campaigns');
 
 const app = express();
+app.set('trust proxy', 1); // Render sits behind a proxy — needed for correct visitor IPs (rate limits)
 
 // CORS — only allow requests from the configured frontend origin.
 // In production, CLIENT_ORIGIN must be set to your Netlify URL.
@@ -67,9 +69,18 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/me', meRoutes);
 
+// Unknown API route
+app.use('/api', (req, res) => res.status(404).json({ message: 'Not found' }));
+
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error('[ERROR]', err.message || err);
+  if (res.headersSent) return next(err);
+  // Bad ids in links (e.g. /orders/abc) → 404 instead of an error
+  if (err.name === 'CastError') return res.status(404).json({ message: 'Not found' });
+  if (err.name === 'ValidationError') return res.status(400).json({ message: Object.values(err.errors || {}).map(e => e.message).join(', ') || 'Invalid data' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ message: 'That upload is too big. Please use smaller photos.' });
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ message: 'Invalid request' });
+  console.error('[ERROR]', req.method, req.originalUrl, err.message || err);
   // Don't leak stack traces in production
   const isDev = process.env.NODE_ENV !== 'production';
   res.status(500).json({

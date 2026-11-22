@@ -87,102 +87,121 @@ async function notifySellers(order) {
 
 // POST /api/orders  { address, paymentMethod }
 // Builds the order from the user's current server-side cart, then clears the cart.
+// Works out the cart total on the SERVER (never trusting a number sent by the
+// phone). Used both when opening the Razorpay/Cashfree payment window and when
+// placing the order, so the two always agree.
+async function computeCheckout(user, couponCode, userId) {
+  const cartObj = Object.fromEntries(user.cart || []);
+  const keys = Object.keys(cartObj);
+  if (keys.length === 0) return { error: 'Your cart is empty' };
+
+  // Cart keys are "<productId>" or "<productId>:r:<resellerId>" — see routes/cart.js.
+  const parsed = keys.map((k) => {
+    const [productId, tag, resellerId] = k.split(':');
+    return { productId: Number(productId), resellerId: tag === 'r' ? resellerId : null, qty: cartObj[k] };
+  });
+
+  const productIds = [...new Set(parsed.map((p) => p.productId))];
+  const products = await Product.find({ id: { $in: productIds } });
+  const productMap = new Map(products.map((p) => [p.id, p]));
+
+  const resellerIds = [...new Set(parsed.filter((p) => p.resellerId).map((p) => p.resellerId))];
+  const listings = resellerIds.length
+    ? await ResellerListing.find({ reseller: { $in: resellerIds }, productId: { $in: productIds }, active: true })
+    : [];
+  const listingMap = new Map(listings.map((l) => [`${l.reseller}:${l.productId}`, l]));
+
+  const items = [];
+  const qtyByProduct = new Map();
+  for (const p of parsed) {
+    const product = productMap.get(p.productId);
+    if (!product || product.active === false) continue;
+    qtyByProduct.set(product.id, (qtyByProduct.get(product.id) || 0) + p.qty);
+    const salePrice = effectivePrice(product);
+    let price = salePrice;
+    let reseller = null;
+    if (p.resellerId) {
+      const listing = listingMap.get(`${p.resellerId}:${p.productId}`);
+      if (!listing) return { error: `A reseller listing in your cart is no longer available (${product.name})` };
+      price = listing.resellPrice;
+      reseller = p.resellerId;
+    }
+    items.push({
+      productId: product.id, name: product.name, icon: product.icon, image: product.image,
+      price, basePrice: salePrice, qty: p.qty, seller: product.seller || null, reseller,
+    });
+  }
+  if (items.length === 0) return { error: 'Your cart is empty' };
+
+  // Don't sell more than is in stock
+  for (const [pid, qty] of qtyByProduct) {
+    const product = productMap.get(pid);
+    if (product.stock != null && qty > product.stock) {
+      return { error: product.stock <= 0 ? `"${product.name}" just went out of stock. Please remove it from your cart.` : `Only ${product.stock} left of "${product.name}". Please reduce the quantity in your cart.` };
+    }
+  }
+
+  const itemsTotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
+  const deliveryFee = itemsTotal >= 499 ? 0 : 49;
+
+  // Coupon — re-checked here, never trusting the earlier /validate-coupon preview
+  let discount = 0;
+  let coupon = null;
+  if (couponCode) {
+    const settings = await Settings.get();
+    const c = settings.coupons.find((x) => x.code.toUpperCase() === String(couponCode).toUpperCase());
+    if (c && c.active !== false && (c.uses || 0) < c.maxUses &&
+        (!c.userId || String(c.userId) === String(userId)) && // personal (Spin & Win) codes: owner only
+        (!c.expiresAt || new Date(c.expiresAt) >= new Date()) &&
+        (!c.minOrderValue || itemsTotal >= c.minOrderValue)) {
+      discount = Math.floor((itemsTotal * c.discountPercent) / 100);
+      coupon = c;
+    }
+  }
+
+  return { items, itemsTotal, deliveryFee, discount, coupon, total: itemsTotal + deliveryFee - discount };
+}
+
+// Count one use of a coupon — only called once the order is really saved.
+async function useCoupon(code) {
+  if (!code) return;
+  const settings = await Settings.get();
+  const c = settings.coupons.find((x) => x.code === code);
+  if (!c) return;
+  c.uses = (c.uses || 0) + 1;
+  settings.markModified('coupons'); // coupons is a plain array — Mongoose must be told it changed
+  await settings.save();
+}
+
+const gatewayFail = (paymentId) => `We received your payment but couldn't match it to your cart. Please contact support with payment ID ${paymentId} — you'll get a full refund or your order will be placed.`;
+
 router.post('/', async (req, res) => {
   try {
     const { address, paymentMethod, couponCode, razorpayOrderId, razorpayPaymentId, razorpaySignature, cashfreeOrderId } = req.body;
     const user = await User.findById(req.userId);
-    const cartObj = Object.fromEntries(user.cart || []);
-    const keys = Object.keys(cartObj);
+    if (!user) return res.status(401).json({ message: 'Please log in again' });
 
-    if (keys.length === 0) return res.status(400).json({ message: 'Your cart is empty' });
-
-    // Cart keys are "<productId>" or "<productId>:r:<resellerId>" — see routes/cart.js.
-    const parsed = keys.map((k) => {
-      const [productId, tag, resellerId] = k.split(':');
-      return { productId: Number(productId), resellerId: tag === 'r' ? resellerId : null, qty: cartObj[k] };
-    });
-
-    const productIds = [...new Set(parsed.map((p) => p.productId))];
-    const products = await Product.find({ id: { $in: productIds } });
-    const productMap = new Map(products.map((p) => [p.id, p]));
-
-    const resellerIds = [...new Set(parsed.filter((p) => p.resellerId).map((p) => p.resellerId))];
-    const listings = resellerIds.length
-      ? await ResellerListing.find({ reseller: { $in: resellerIds }, productId: { $in: productIds }, active: true })
-      : [];
-    const listingMap = new Map(listings.map((l) => [`${l.reseller}:${l.productId}`, l]));
-
-    const items = [];
-    for (const p of parsed) {
-      const product = productMap.get(p.productId);
-      if (!product) continue;
-      const salePrice = effectivePrice(product);
-      let price = salePrice;
-      let reseller = null;
-      if (p.resellerId) {
-        const listing = listingMap.get(`${p.resellerId}:${p.productId}`);
-        if (!listing) return res.status(400).json({ message: `A reseller listing in your cart is no longer available (${product.name})` });
-        price = listing.resellPrice;
-        reseller = p.resellerId;
-      }
-      items.push({
-        productId: product.id,
-        name: product.name,
-        icon: product.icon,
-        image: product.image,
-        price,
-        basePrice: salePrice,
-        qty: p.qty,
-        seller: product.seller || null,
-        reseller,
-      });
+    if (!address?.fullName || !address?.phone || !address?.addressLine || !address?.city || !address?.pincode) {
+      return res.status(400).json({ message: 'Please fill in your full delivery address' });
     }
 
-    if (items.length === 0) return res.status(400).json({ message: 'Your cart is empty' });
+    const calc = await computeCheckout(user, couponCode, req.userId);
+    if (calc.error) return res.status(400).json({ message: calc.error });
+    const { items, itemsTotal, deliveryFee, discount, total } = calc;
+    const appliedCouponCode = calc.coupon ? calc.coupon.code : '';
 
-    const itemsTotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
-    const deliveryFee = itemsTotal >= 499 ? 0 : 49;
-
-    // Apply a coupon (if one was supplied and is still genuinely valid) —
-    // re-checked here rather than trusting the earlier /validate-coupon call,
-    // since that was only a preview and someone could otherwise place an
-    // order with a stale or already-used-up code.
-    let discount = 0;
-    let appliedCouponCode = '';
-    if (couponCode) {
-      const settings = await Settings.get();
-      const coupon = settings.coupons.find(c => c.code.toUpperCase() === String(couponCode).toUpperCase());
-      if (coupon && coupon.active !== false && (coupon.uses || 0) < coupon.maxUses &&
-          (!coupon.userId || String(coupon.userId) === String(req.userId)) && // personal (Spin & Win) codes: owner only
-          (!coupon.expiresAt || new Date(coupon.expiresAt) >= new Date()) &&
-          (!coupon.minOrderValue || itemsTotal >= coupon.minOrderValue)) {
-        discount = Math.floor((itemsTotal * coupon.discountPercent) / 100);
-        appliedCouponCode = coupon.code;
-        coupon.uses = (coupon.uses || 0) + 1;
-        // coupons is a plain array, so Mongoose must be told it changed —
-        // without this the use count was never saved and limits never applied.
-        settings.markModified('coupons');
-        await settings.save();
-      }
-    }
-
-    const total = itemsTotal + deliveryFee - discount;
-
-    // Step 6 — Payment:
+    // Payment:
     // - COD is collected later at delivery.
-    // - Anything else (e.g. a raw 'UPI'/'CARD') is rejected — those used to be
-    //   auto-marked paid with no real payment behind them.
-    // - RAZORPAY/CASHFREE come from the real gateway popup on Checkout — the
-    //   frontend already collected the payment signature, so we verify it
-    //   here before ever marking the order paid. If verification fails or
-    //   the signature is missing, the order is created as 'pending' instead
-    //   of silently trusting the client.
+    // - RAZORPAY/CASHFREE: the payment is checked directly with the gateway —
+    //   signature, that it really succeeded, that it belongs to this customer,
+    //   and that the AMOUNT PAID equals this cart's total.
+    // - Anything else is refused.
     const method = paymentMethod || 'COD';
     let paymentStatus = 'pending';
     let transactionId = '';
 
     // Delivery area + Cash-on-Delivery rules set by the admin
-    const pinRule = checkPincode(await Settings.get(), address?.pincode, 5);
+    const pinRule = checkPincode(await Settings.get(), address.pincode, 5);
     if (pinRule.valid && !pinRule.deliverable) {
       return res.status(400).json({ message: `Sorry, we don't deliver to pincode ${address.pincode} yet.` });
     }
@@ -191,53 +210,85 @@ router.post('/', async (req, res) => {
     }
 
     if (!['COD', 'RAZORPAY', 'CASHFREE'].includes(method)) {
-      // 'UPI'/'CARD' used to be auto-marked PAID by a fake charge function, so
-      // anyone could call the API directly and get a "paid" order without
-      // paying. Real UPI/card payments go through Razorpay/Cashfree instead.
       return res.status(400).json({ message: 'Please pay with UPI/Card through the payment window, or choose Cash on Delivery.' });
-    } else if (method === 'RAZORPAY' && razorpayOrderId && razorpayPaymentId && razorpaySignature) {
+    }
+
+    if (method === 'RAZORPAY') {
+      if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+        return res.status(400).json({ message: 'Payment was not completed. Please try again.' });
+      }
       const SiteContent = require('../models/SiteContent');
       const crypto = require('crypto');
       const content = await SiteContent.get();
-      const expectedSign = crypto.createHmac('sha256', content.razorpayKeySecret)
+      const expectedSign = crypto.createHmac('sha256', content.razorpayKeySecret || '')
         .update(razorpayOrderId + '|' + razorpayPaymentId)
         .digest('hex');
-      if (expectedSign === razorpaySignature) {
-        // Stop one real payment being reused to mark many orders as paid
-        if (await Order.exists({ transactionId: razorpayPaymentId })) {
-          return res.status(400).json({ message: 'This payment has already been used for another order.' });
-        }
-        paymentStatus = 'paid';
-        transactionId = razorpayPaymentId;
-      } else {
+      const a = Buffer.from(expectedSign); const b = Buffer.from(String(razorpaySignature));
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
         return res.status(400).json({ message: 'Payment verification failed. Please contact support before retrying.' });
       }
-    } else if (method === 'CASHFREE' && cashfreeOrderId) {
+      // Stop one real payment being reused to mark many orders as paid
+      if (await Order.exists({ transactionId: razorpayPaymentId })) {
+        return res.status(400).json({ message: 'This payment has already been used for another order.' });
+      }
+      // Ask Razorpay what was actually paid
+      const authHeader = 'Basic ' + Buffer.from(`${content.razorpayKeyId}:${content.razorpayKeySecret}`).toString('base64');
+      let payment, rzOrder;
+      try {
+        const [pr, or] = await Promise.all([
+          fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(razorpayPaymentId)}`, { headers: { Authorization: authHeader } }),
+          fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(razorpayOrderId)}`, { headers: { Authorization: authHeader } }),
+        ]);
+        payment = await pr.json(); rzOrder = await or.json();
+        if (!pr.ok || !or.ok) throw new Error('lookup failed');
+      } catch {
+        return res.status(502).json({ message: `Couldn't confirm your payment with Razorpay right now. Please contact support with payment ID ${razorpayPaymentId}.` });
+      }
+      const expectedPaise = Math.round(total * 100);
+      const ok = payment.order_id === razorpayOrderId &&
+        ['captured', 'authorized'].includes(payment.status) &&
+        Number(payment.amount) === expectedPaise &&
+        (!rzOrder.notes?.userId || String(rzOrder.notes.userId) === String(req.userId));
+      if (!ok) {
+        console.error(`[PAYMENT MISMATCH] razorpay ${razorpayPaymentId}: paid ${payment.amount} status ${payment.status}, cart ${expectedPaise}, user ${req.userId}`);
+        return res.status(400).json({ message: gatewayFail(razorpayPaymentId) });
+      }
+      paymentStatus = 'paid';
+      transactionId = razorpayPaymentId;
+    }
+
+    if (method === 'CASHFREE') {
+      if (!cashfreeOrderId) return res.status(400).json({ message: 'Payment was not completed. Please try again.' });
       const SiteContent = require('../models/SiteContent');
       const content = await SiteContent.get();
       const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
+      const headers = { 'x-api-version': '2023-08-01', 'x-client-id': content.cashfreeAppId, 'x-client-secret': content.cashfreeSecretKey };
+      let cfOrder, payments;
       try {
-        const cfRes = await fetch(`${base}/orders/${cashfreeOrderId}/payments`, {
-          headers: {
-            'x-api-version': '2023-08-01',
-            'x-client-id': content.cashfreeAppId,
-            'x-client-secret': content.cashfreeSecretKey,
-          },
-        });
-        const payments = await cfRes.json();
-        const successPayment = Array.isArray(payments) ? payments.find(p => p.payment_status === 'SUCCESS') : null;
-        if (successPayment && await Order.exists({ transactionId: String(successPayment.cf_payment_id) })) {
-          return res.status(400).json({ message: 'This payment has already been used for another order.' });
-        }
-        if (successPayment) {
-          paymentStatus = 'paid';
-          transactionId = String(successPayment.cf_payment_id);
-        } else {
-          return res.status(400).json({ message: 'Payment not confirmed by Cashfree yet. Please contact support before retrying.' });
-        }
-      } catch (cfErr) {
-        return res.status(400).json({ message: 'Could not verify Cashfree payment. Please contact support before retrying.' });
+        const [o, p] = await Promise.all([
+          fetch(`${base}/orders/${encodeURIComponent(cashfreeOrderId)}`, { headers }),
+          fetch(`${base}/orders/${encodeURIComponent(cashfreeOrderId)}/payments`, { headers }),
+        ]);
+        cfOrder = await o.json(); payments = await p.json();
+        if (!o.ok) throw new Error('lookup failed');
+      } catch {
+        return res.status(502).json({ message: `Couldn't confirm your payment with Cashfree right now. Please contact support with order ID ${cashfreeOrderId}.` });
       }
+      const successPayment = Array.isArray(payments) ? payments.find((x) => x.payment_status === 'SUCCESS') : null;
+      if (!successPayment || cfOrder.order_status !== 'PAID') {
+        return res.status(400).json({ message: 'Payment not confirmed by Cashfree yet. Please contact support before retrying.' });
+      }
+      if (await Order.exists({ transactionId: String(successPayment.cf_payment_id) })) {
+        return res.status(400).json({ message: 'This payment has already been used for another order.' });
+      }
+      const ok = Math.round(Number(cfOrder.order_amount) * 100) === Math.round(total * 100) &&
+        String(cfOrder.customer_details?.customer_id) === String(req.userId);
+      if (!ok) {
+        console.error(`[PAYMENT MISMATCH] cashfree ${cashfreeOrderId}: paid ${cfOrder.order_amount}, cart ${total}, user ${req.userId}`);
+        return res.status(400).json({ message: gatewayFail(successPayment.cf_payment_id) });
+      }
+      paymentStatus = 'paid';
+      transactionId = String(successPayment.cf_payment_id);
     }
 
     const order = new Order({
@@ -252,6 +303,7 @@ router.post('/', async (req, res) => {
       paymentMethod: method,
       paymentStatus,
       transactionId,
+      gatewayOrderId: method === 'RAZORPAY' ? razorpayOrderId : method === 'CASHFREE' ? cashfreeOrderId : '',
     });
 
     // Step 7 — Commission: online payments are captured immediately, so the
@@ -261,6 +313,8 @@ router.post('/', async (req, res) => {
     }
 
     await order.save();
+
+    await useCoupon(appliedCouponCode);
 
     // Decrement stock now that the order is genuinely placed. Mirrors the
     // restock done on cancellation (POST /:id/cancel below) — without this,
@@ -465,15 +519,22 @@ router.post('/razorpay/create-order', async (req, res) => {
     if (!content.razorpayKeyId || !content.razorpayKeySecret) {
       return res.status(400).json({ message: 'Razorpay is not configured. Add keys in Admin → Settings → Payments.' });
     }
+    // Amount is worked out here from the customer's cart — never taken from the phone
+    const buyer = await User.findById(req.userId);
+    const calc = await computeCheckout(buyer, req.body.couponCode, req.userId);
+    if (calc.error) return res.status(400).json({ message: calc.error });
     const authHeader = 'Basic ' + Buffer.from(`${content.razorpayKeyId}:${content.razorpayKeySecret}`).toString('base64');
     const rzpRes = await fetch('https://api.razorpay.com/v1/orders', {
       method: 'POST',
       headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: Math.round(req.body.amount * 100), currency: 'INR', receipt: `receipt_${Date.now()}` }),
+      body: JSON.stringify({
+        amount: Math.round(calc.total * 100), currency: 'INR', receipt: `sb_${String(req.userId).slice(-6)}_${Date.now()}`,
+        notes: { userId: String(req.userId), coupon: calc.coupon?.code || '' },
+      }),
     });
     const order = await rzpRes.json();
     if (!rzpRes.ok) return res.status(400).json({ message: order?.error?.description || 'Razorpay order creation failed' });
-    res.json({ orderId: order.id, keyId: content.razorpayKeyId });
+    res.json({ orderId: order.id, keyId: content.razorpayKeyId, amount: calc.total });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -486,8 +547,10 @@ router.post('/cashfree/create-order', async (req, res) => {
       return res.status(400).json({ message: 'Cashfree is not configured. Add keys in Admin → Settings → Payments.' });
     }
     const buyer = await User.findById(req.userId);
+    const calc = await computeCheckout(buyer, req.body.couponCode, req.userId);
+    if (calc.error) return res.status(400).json({ message: calc.error });
     const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
-    const orderId = `cf_${Date.now()}`;
+    const orderId = `cf_${String(req.userId).slice(-6)}_${Date.now()}`;
     const frontendUrl = process.env.CLIENT_ORIGIN?.split(',')[0] || 'http://localhost:5173';
     const response = await fetch(`${base}/orders`, {
       method: 'POST',
@@ -499,13 +562,13 @@ router.post('/cashfree/create-order', async (req, res) => {
       },
       body: JSON.stringify({
         order_id: orderId,
-        order_amount: req.body.amount,
+        order_amount: calc.total,
         order_currency: 'INR',
         customer_details: {
           customer_id: String(buyer._id),
           customer_name: buyer.name,
           customer_email: buyer.email,
-          customer_phone: buyer.phone || '9999999999',
+          customer_phone: (String(buyer.phone || '').replace(/\D/g, '').slice(-10)) || '9999999999',
         },
         // Same reasoning as the Razorpay redirect fix: UPI intent payments
         // background this tab to open GPay/PhonePe/etc, and Android often

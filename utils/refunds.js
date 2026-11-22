@@ -33,8 +33,12 @@ async function refundOrderPayment(order) {
       if (!content.cashfreeAppId || !content.cashfreeSecretKey) {
         return { success: false, message: 'Cashfree is not configured — cannot process this refund automatically.' };
       }
+      // Cashfree refunds are made against the Cashfree ORDER id (cf_…), not the payment id
+      if (!order.gatewayOrderId) {
+        return { success: false, message: 'This older order has no Cashfree order ID saved — please refund it from the Cashfree dashboard.' };
+      }
       const base = content.cashfreeLiveMode ? 'https://api.cashfree.com/pg' : 'https://sandbox.cashfree.com/pg';
-      const cfRes = await fetch(`${base}/orders/${order.transactionId}/refunds`, {
+      const cfRes = await fetch(`${base}/orders/${encodeURIComponent(order.gatewayOrderId)}/refunds`, {
         method: 'POST',
         headers: {
           'x-api-version': '2023-08-01',
@@ -42,7 +46,7 @@ async function refundOrderPayment(order) {
           'x-client-secret': content.cashfreeSecretKey,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ refund_amount: order.total, refund_id: `refund_${order._id}_${Date.now()}` }),
+        body: JSON.stringify({ refund_amount: order.total, refund_id: `rf_${String(order._id).slice(-10)}_${Date.now()}` }),
       });
       const cfData = await cfRes.json();
       if (!cfRes.ok) return { success: false, message: cfData?.message || 'Cashfree refund failed.' };

@@ -52,6 +52,8 @@ const orderSchema = new mongoose.Schema({
   paymentMethod: { type: String, enum: ['UPI', 'CARD', 'COD', 'RAZORPAY', 'CASHFREE'], default: 'COD' },
   paymentStatus: { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
   transactionId: { type: String, default: '' },
+  // Razorpay order id / Cashfree order id — needed for refunds and support lookups
+  gatewayOrderId: { type: String, default: '' },
   razorpayOrderId: { type: String, default: '' },
   commissionPercent: { type: Number, default: null },
   status: {
