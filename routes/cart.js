@@ -4,6 +4,7 @@ const Product = require('../models/Product');
 const ResellerListing = require('../models/ResellerListing');
 const auth = require('../middleware/auth');
 
+const { effectivePrice } = require('../utils/pricing');
 const router = express.Router();
 router.use(auth(true));
 
@@ -38,7 +39,7 @@ async function buildCartResponse(user) {
     .map((p) => {
       const product = productMap.get(p.productId);
       if (!product) return null;
-      let price = product.price;
+      let price = effectivePrice(product);
       let reseller = null;
       if (p.resellerId) {
         const listing = listingMap.get(`${p.resellerId}:${p.productId}`);

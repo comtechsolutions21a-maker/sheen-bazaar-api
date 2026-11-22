@@ -93,13 +93,18 @@ router.get('/visitors', async (req, res) => {
 });
 
 // ─── SETTINGS ───
-router.get('/settings', async (req, res) => { res.json(await Settings.get()); });
+router.get('/settings', async (req, res) => {
+  const s = (await Settings.get()).toObject();
+  delete s.vapidPrivateKey; // push-notification signing key — never sent to the browser
+  res.json(s);
+});
 router.put('/settings', async (req, res) => {
   const settings = await Settings.get();
-  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','whatsappMessage','facebookUrl','instagramUrl','twitterUrl','youtubeUrl','linkedinUrl','pinterestUrl','telegramUrl','threadsUrl','lowStockThreshold','gstin','gstEnabled','gstPercent','referralRewardAmount'];
+  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','whatsappMessage','facebookUrl','instagramUrl','twitterUrl','youtubeUrl','linkedinUrl','pinterestUrl','telegramUrl','threadsUrl','lowStockThreshold','gstin','gstEnabled','gstPercent','referralRewardAmount','serviceablePincodes','blockedPincodes','codPincodes','fastPincodes','fastDeliveryDays'];
   allowed.forEach(k => { if (req.body[k] !== undefined) settings[k] = req.body[k]; });
   await settings.save();
-  res.json(settings);
+  const out = settings.toObject(); delete out.vapidPrivateKey;
+  res.json(out);
 });
 
 // ─── SITE CONTENT ───
@@ -228,7 +233,7 @@ router.patch('/products/:id', async (req, res) => {
   const product = await Product.findOne({ id: Number(req.params.id) });
   if (!product) return res.status(404).json({ message: 'Product not found' });
   const wasOutOfStock = product.stock === 0;
-  const allowed = ['active','name','price','old','stock','badge','desc','icon','image','cat'];
+  const allowed = ['active','name','price','old','stock','badge','desc','icon','image','images','cat','brand','featured','flashPrice','flashEndsAt','deliveryDays','returnDays','approved'];
   allowed.forEach(k => { if (req.body[k] !== undefined) product[k] = req.body[k]; });
   await product.save();
   if (wasOutOfStock && product.stock > 0) {
@@ -273,11 +278,25 @@ router.patch('/orders/:id/status', async (req, res) => {
 
 // ─── COUPONS ───
 router.post('/coupons', async (req, res) => {
-  const { code, discountPercent, maxUses, expiresAt, minOrderValue } = req.body;
+  const { code, discountPercent, maxUses, expiresAt, minOrderValue, description, showOnOffers } = req.body;
   if (!code || !discountPercent) return res.status(400).json({ message: 'code and discountPercent required' });
   const settings = await Settings.get();
   if (settings.coupons.find(c => c.code.toUpperCase() === code.toUpperCase())) return res.status(400).json({ message: 'Code already exists' });
-  settings.coupons.push({ code: code.toUpperCase(), discountPercent: Number(discountPercent), maxUses: maxUses || 999, uses: 0, expiresAt: expiresAt || null, minOrderValue: minOrderValue || 0, active: true });
+  settings.coupons.push({ code: code.toUpperCase(), discountPercent: Number(discountPercent), maxUses: maxUses || 999, uses: 0, expiresAt: expiresAt || null, minOrderValue: minOrderValue || 0, active: true, description: String(description || '').slice(0, 140), showOnOffers: showOnOffers !== false });
+  await settings.save();
+  res.json(settings.coupons);
+});
+
+// PATCH /api/admin/coupons/:code { active?, showOnOffers?, description? }
+router.patch('/coupons/:code', async (req, res) => {
+  const settings = await Settings.get();
+  const i = settings.coupons.findIndex(c => c.code === req.params.code.toUpperCase());
+  if (i < 0) return res.status(404).json({ message: 'Coupon not found' });
+  const c = { ...settings.coupons[i] };
+  ['active', 'showOnOffers'].forEach(k => { if (req.body[k] !== undefined) c[k] = !!req.body[k]; });
+  if (req.body.description !== undefined) c.description = String(req.body.description).slice(0, 140);
+  settings.coupons.set(i, c);
+  settings.markModified('coupons');
   await settings.save();
   res.json(settings.coupons);
 });
@@ -592,6 +611,9 @@ router.post('/chat/threads/:id/reply', async (req, res) => {
   thread.lastMessageAt = new Date();
   thread.unreadByCustomer = true;
   await thread.save();
+  // Let the customer know on their phone
+  const { pushLater } = require('../utils/push');
+  pushLater(thread.user, { title: '💬 Sheen Bazaar Support replied', body: text.trim().slice(0, 120), url: '/?chat=1', tag: 'support-chat' });
   res.json(thread);
 });
 

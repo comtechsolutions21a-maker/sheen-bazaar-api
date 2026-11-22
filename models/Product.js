@@ -5,6 +5,10 @@ const reviewSchema = new mongoose.Schema({
   name: { type: String, default: 'Customer' },
   rating: { type: Number, required: true, min: 1, max: 5 },
   comment: { type: String, default: '' },
+  // Up to 3 customer photos (compressed JPEG data URLs, ~100-200 KB each)
+  images: [{ type: String }],
+  // True when the reviewer has a delivered order containing this product
+  verified: { type: Boolean, default: false },
   at: { type: Date, default: Date.now },
 }, { _id: false });
 
@@ -68,8 +72,28 @@ const productSchema = new mongoose.Schema({
   active: { type: Boolean, default: true },
   approved: { type: Boolean, default: true }, // admin can unapprove
   featured: { type: Boolean, default: false },
+  // Flash sale — sale price that applies only until flashEndsAt
+  flashPrice: { type: Number, default: 0 },
+  flashEndsAt: { type: Date, default: null },
   // Returns
   returnPolicy: { type: String, default: '7 days easy return' },
 }, { timestamps: true });
+
+// When a flash sale is running, shoppers see the sale price as `price`
+// (and the normal price as `regularPrice`). This only changes what is SENT
+// to the app — the saved price in the database is never touched.
+const { isFlashActive } = require('../utils/pricing');
+function applyFlash(doc, ret) {
+  if (isFlashActive(doc)) {
+    ret.regularPrice = doc.price;
+    ret.price = doc.flashPrice;
+    ret.flashActive = true;
+    if (!ret.old || ret.old < doc.price) ret.old = doc.price;
+  } else {
+    ret.flashActive = false;
+  }
+  return ret;
+}
+productSchema.set('toJSON', { transform: applyFlash });
 
 module.exports = mongoose.model('Product', productSchema);

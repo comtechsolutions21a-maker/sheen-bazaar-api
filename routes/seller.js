@@ -33,24 +33,40 @@ router.get('/products', async (req, res) => {
 });
 
 // POST /api/seller/products — create a new listing
+// Every product field a seller is allowed to set. (Previously only name /
+// price / first image etc. were saved — brand, extra photos, highlights,
+// specifications and delivery/return days were silently dropped.)
+// `rating` is intentionally NOT here: ratings come from real reviews only.
+const SELLER_PRODUCT_FIELDS = [
+  'name', 'icon', 'image', 'images', 'price', 'old', 'badge', 'cat', 'desc', 'stock',
+  'brand', 'sku', 'highlights', 'specifications', 'variants', 'tags',
+  'deliveryDays', 'returnDays', 'warrantyMonths', 'returnPolicy',
+  'flashPrice', 'flashEndsAt',
+];
+
+function pickProductFields(body) {
+  const out = {};
+  for (const f of SELLER_PRODUCT_FIELDS) if (body[f] !== undefined) out[f] = body[f];
+  if (Array.isArray(out.images)) out.images = out.images.filter((x) => typeof x === 'string').slice(0, 8);
+  if (out.images?.length && !out.image) out.image = out.images[0];
+  if (out.flashPrice !== undefined) out.flashPrice = Math.max(0, Number(out.flashPrice) || 0);
+  if (out.flashEndsAt !== undefined) out.flashEndsAt = out.flashEndsAt ? new Date(out.flashEndsAt) : null;
+  if (out.flashEndsAt && Number.isNaN(out.flashEndsAt.getTime())) out.flashEndsAt = null;
+  return out;
+}
+
 router.post('/products', async (req, res) => {
   try {
-    const { name, icon, image, price, old, rating, badge, cat, desc, stock } = req.body;
-    if (!name || !price || !cat) {
+    const data = pickProductFields(req.body);
+    if (!data.name || !data.price || !data.cat) {
       return res.status(400).json({ message: 'name, price and cat are required' });
     }
     const product = await Product.create({
+      icon: '🛍️',
+      ...data,
       id: await nextProductId(),
-      name,
-      icon: icon || '🛍️',
-      image: image || '',
-      price,
-      old: old || price,
-      rating: rating || 4.0,
-      badge: badge || '',
-      cat,
-      desc: desc || '',
-      stock: stock ?? 100,
+      old: data.old || data.price,
+      stock: data.stock ?? 100,
       seller: req.user._id,
       // Listing goes live immediately only if the seller is already approved.
       active: !!req.user.sellerApproved,
@@ -67,10 +83,9 @@ router.put('/products/:id', async (req, res) => {
   if (!product) return res.status(404).json({ message: 'Listing not found' });
 
   const wasOutOfStock = product.stock === 0;
-  const fields = ['name', 'icon', 'image', 'price', 'old', 'rating', 'badge', 'cat', 'desc', 'stock', 'active'];
-  fields.forEach((f) => {
-    if (req.body[f] !== undefined) product[f] = req.body[f];
-  });
+  const data = pickProductFields(req.body);
+  Object.assign(product, data);
+  if (req.body.active !== undefined) product.active = !!req.body.active && !!req.user.sellerApproved;
   await product.save();
   if (wasOutOfStock && product.stock > 0) {
     const { notifyBackInStock } = require('../utils/stockAlerts');
@@ -148,6 +163,54 @@ router.get('/earnings', async (req, res) => {
   });
 
   res.json({ paidTotal, pendingTotal, paidOrders, pendingOrders, transactions });
+});
+
+// GET /api/seller/report — monthly sales/payout figures + best sellers for charts
+router.get('/report', async (req, res) => {
+  const me = String(req.user._id);
+  const since = new Date(); since.setMonth(since.getMonth() - 11); since.setDate(1); since.setHours(0, 0, 0, 0);
+  const orders = await Order.find({ 'items.seller': req.user._id }).sort({ createdAt: 1 });
+
+  const months = [];
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(since); d.setMonth(since.getMonth() + i);
+    months.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, label: d.toLocaleString('en-IN', { month: 'short', year: '2-digit' }), orders: 0, sales: 0, payout: 0, commission: 0 });
+  }
+  const monthMap = new Map(months.map((m) => [m.key, m]));
+  const products = new Map();
+  const totals = { orders: 0, sales: 0, commission: 0, settled: 0, awaitingPayout: 0, pendingCod: 0, cancelled: 0, returned: 0, delivered: 0 };
+
+  for (const o of orders) {
+    const mine = o.items.filter((i) => String(i.seller) === me);
+    if (!mine.length) continue;
+    if (o.status === 'cancelled') { totals.cancelled++; continue; }
+    if (o.status === 'returned') { totals.returned++; continue; }
+    if (o.status === 'delivered') totals.delivered++;
+
+    const gross = mine.reduce((s, i) => s + (i.basePrice ?? i.price) * i.qty, 0);
+    const commission = o.paymentStatus === 'paid' ? mine.reduce((s, i) => s + (i.commissionAmount || 0), 0) : 0;
+    const payout = o.paymentStatus === 'paid' ? mine.reduce((s, i) => s + (i.payoutAmount || 0), 0) : gross;
+
+    totals.orders++; totals.sales += gross; totals.commission += commission;
+    if (o.paymentStatus !== 'paid') totals.pendingCod += payout;
+    else if (mine.every((i) => i.payoutSettled)) totals.settled += payout;
+    else totals.awaitingPayout += payout;
+
+    const d = new Date(o.createdAt);
+    const m = monthMap.get(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    if (m) { m.orders++; m.sales += gross; m.payout += payout; m.commission += commission; }
+
+    for (const i of mine) {
+      const p = products.get(i.productId) || { productId: i.productId, name: i.name, qty: 0, sales: 0 };
+      p.qty += i.qty; p.sales += (i.basePrice ?? i.price) * i.qty;
+      products.set(i.productId, p);
+    }
+  }
+  const round = (n) => Math.round(n * 100) / 100;
+  months.forEach((m) => { m.sales = round(m.sales); m.payout = round(m.payout); m.commission = round(m.commission); });
+  Object.keys(totals).forEach((k) => { totals[k] = round(totals[k]); });
+  const top = [...products.values()].sort((a, b) => b.sales - a.sales).slice(0, 8).map((p) => ({ ...p, sales: round(p.sales) }));
+  res.json({ months, totals, topProducts: top });
 });
 
 // PATCH /api/seller/orders/:id/status — advance the fulfillment status of an order

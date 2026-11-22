@@ -6,6 +6,8 @@ const express = require('express');
 const SiteContent = require('../models/SiteContent');
 const Notification = require('../models/Notification');
 const Settings = require('../models/Settings');
+const Product = require('../models/Product');
+const { checkPincode } = require('../utils/pincode');
 
 const router = express.Router();
 
@@ -25,6 +27,40 @@ router.get('/public/notifications', async (req, res) => {
   if (req.query.role) filter.targetRole = { $in: ['all', req.query.role] };
   const notifications = await Notification.find(filter).sort({ createdAt: -1 }).limit(30);
   res.json(notifications);
+});
+
+// GET /api/admin/public/offers — coupons the admin chose to show publicly +
+// products currently on a flash sale (for the Offers page and countdowns).
+router.get('/public/offers', async (req, res) => {
+  const settings = await Settings.get();
+  const now = new Date();
+  const coupons = (settings.coupons || [])
+    .filter(c => c && c.active !== false && c.showOnOffers !== false &&
+      (c.maxUses == null || (c.uses || 0) < c.maxUses) &&
+      (!c.expiresAt || new Date(c.expiresAt) >= now))
+    .map(c => ({
+      code: c.code, discountPercent: c.discountPercent, minOrderValue: c.minOrderValue || 0,
+      expiresAt: c.expiresAt || null, description: c.description || '',
+      usesLeft: c.maxUses != null ? Math.max(0, c.maxUses - (c.uses || 0)) : null,
+    }));
+
+  const flash = await Product.find({ active: true, flashPrice: { $gt: 0 }, flashEndsAt: { $gt: now } })
+    .select('-reviews -questions -qna -stockAlerts')
+    .sort({ flashEndsAt: 1 })
+    .limit(40);
+
+  res.json({ coupons, flashSales: flash.filter(p => p.flashPrice < p.price) });
+});
+
+// GET /api/admin/public/pincode/:pin?productId=123 — delivery estimate + COD check
+router.get('/public/pincode/:pin', async (req, res) => {
+  const settings = await Settings.get();
+  let days = 5;
+  if (req.query.productId) {
+    const p = await Product.findOne({ id: Number(req.query.productId) }).select('deliveryDays');
+    if (p?.deliveryDays) days = p.deliveryDays;
+  }
+  res.json(checkPincode(settings, req.params.pin, days));
 });
 
 // GET /api/admin/public/gateways — which payment gateways are live, and which is primary

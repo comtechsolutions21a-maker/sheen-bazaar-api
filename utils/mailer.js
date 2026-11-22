@@ -156,7 +156,7 @@ function layout({ title, preheader = '', body }) {
 }
 
 // Sends one email. Never throws — returns { sent, simulated, error }.
-async function sendMail({ to, subject, text, html, replyTo }) {
+async function sendMail({ to, subject, text, html, replyTo, attachments = [] }) {
   if (!isRealEmail(to)) return { sent: false, skipped: true };
 
   const plain = text || htmlToText(html);
@@ -178,16 +178,18 @@ async function sendMail({ to, subject, text, html, replyTo }) {
         to: [{ email: to }],
         subject, htmlContent: html || `<pre>${escapeHtml(plain)}</pre>`, textContent: plain,
         ...(reply ? { replyTo: { email: reply } } : {}),
+        ...(attachments.length ? { attachment: attachments.map(a => ({ name: a.filename, content: Buffer.from(a.content).toString('base64') })) } : {}),
         headers,
       });
     } else if (via === 'resend') {
       await postJson('https://api.resend.com/emails', { Authorization: `Bearer ${process.env.RESEND_API_KEY}` }, {
         from, to: [to], subject, html, text: plain,
         ...(reply ? { reply_to: reply } : {}),
+        ...(attachments.length ? { attachments: attachments.map(a => ({ filename: a.filename, content: Buffer.from(a.content).toString('base64') })) } : {}),
         headers,
       });
     } else {
-      await getTransporter().sendMail({ from, to, subject, text: plain, html, replyTo: reply || undefined, headers });
+      await getTransporter().sendMail({ from, to, subject, text: plain, html, replyTo: reply || undefined, headers, attachments: attachments.map(a => ({ filename: a.filename, content: Buffer.from(a.content) })) });
     }
     return { sent: true, simulated: false };
   } catch (err) {
@@ -265,7 +267,8 @@ const templates = {
       </table>
       <p style="margin-top:16px">${payLine}</p>
       ${addr ? `<p style="color:${MUTED};font-size:13px">Delivering to: ${addr}</p>` : ''}
-      ${button('Track my order', `${siteUrl()}/orders/${order._id}`)}`;
+      ${button('Track my order', `${siteUrl()}/orders/${order._id}`)}
+      <p style="color:${MUTED};font-size:13px">📎 Your invoice is attached to this email as a PDF.</p>`;
     return { subject: `Order #${orderNo(order)} placed — Sheen Bazaar`, html: layout({ title: 'Order placed successfully 🎉', preheader: `Order #${orderNo(order)} • ${rupees(order.total)}`, body }) };
   },
 
@@ -335,8 +338,15 @@ async function notifyOrderStatus(order, status) {
     const User = require('../models/User');
     const user = await User.findById(order.user).select('name email');
     if (!user) return;
-    const mail = templates.orderStatus(order, user, status || order.status);
+    const st = status || order.status;
+    const mail = templates.orderStatus(order, user, st);
     if (mail) sendLater({ to: user.email, ...mail });
+    // Phone notification too (if the customer turned them on)
+    const c = STATUS_COPY[st];
+    if (c) {
+      const { pushLater } = require('./push');
+      pushLater(user._id, { title: `${c.emoji} ${c.title}`, body: `Order #${orderNo(order)} • ${c.line}`, url: `/orders/${order._id}`, tag: `order-${order._id}` });
+    }
   } catch (err) {
     console.error('notifyOrderStatus failed:', err.message);
   }

@@ -4,11 +4,12 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const ResellerListing = require('../models/ResellerListing');
 const auth = require('../middleware/auth');
-
 const { sendLater, templates, notifyOrderStatus } = require('../utils/mailer');
-
-
+const { pushLater } = require('../utils/push');
+const { generateInvoicePdf, invoiceNumber } = require('../utils/invoicePdf');
 const { applyCommission } = require('../utils/commission');
+const { effectivePrice } = require('../utils/pricing');
+const { checkPincode } = require('../utils/pincode');
 const Settings = require('../models/Settings');
 
 const router = express.Router();
@@ -80,6 +81,7 @@ async function notifySellers(order) {
     const myItems = order.items.filter((i) => String(i.seller) === String(seller._id));
     const myTotal = myItems.reduce((sum, i) => sum + i.basePrice * i.qty, 0);
     sendLater({ to: seller.email, ...templates.sellerNewOrder(order, seller, myItems, myTotal) });
+    pushLater(seller._id, { title: '🛒 New order received!', body: `Order #${String(order._id).slice(-6).toUpperCase()} • ₹${myTotal} — open your dashboard to confirm it.`, url: '/seller', tag: `seller-order-${order._id}` });
   }
 }
 
@@ -114,7 +116,8 @@ router.post('/', async (req, res) => {
     for (const p of parsed) {
       const product = productMap.get(p.productId);
       if (!product) continue;
-      let price = product.price;
+      const salePrice = effectivePrice(product);
+      let price = salePrice;
       let reseller = null;
       if (p.resellerId) {
         const listing = listingMap.get(`${p.resellerId}:${p.productId}`);
@@ -128,7 +131,7 @@ router.post('/', async (req, res) => {
         icon: product.icon,
         image: product.image,
         price,
-        basePrice: product.price,
+        basePrice: salePrice,
         qty: p.qty,
         seller: product.seller || null,
         reseller,
@@ -173,6 +176,15 @@ router.post('/', async (req, res) => {
     const method = paymentMethod || 'COD';
     let paymentStatus = 'pending';
     let transactionId = '';
+
+    // Delivery area + Cash-on-Delivery rules set by the admin
+    const pinRule = checkPincode(await Settings.get(), address?.pincode, 5);
+    if (pinRule.valid && !pinRule.deliverable) {
+      return res.status(400).json({ message: `Sorry, we don't deliver to pincode ${address.pincode} yet.` });
+    }
+    if (method === 'COD' && pinRule.valid && !pinRule.cod) {
+      return res.status(400).json({ message: `Cash on Delivery isn't available for pincode ${address.pincode}. Please pay online.` });
+    }
 
     if (!['COD', 'RAZORPAY', 'CASHFREE'].includes(method)) {
       // 'UPI'/'CARD' used to be auto-marked PAID by a fake charge function, so
@@ -267,7 +279,13 @@ router.post('/', async (req, res) => {
     // Fire-and-forget: don't make the customer wait on email delivery.
     notifySellers(order).catch((err) => console.error('notifySellers failed:', err.message));
     // Customer's own order-confirmation email (from the no-reply address)
-    sendLater({ to: user.email, ...templates.orderPlaced(order, user) });
+    // …with the PDF invoice attached
+    Settings.get().then((st) => {
+      let attachments = [];
+      try { attachments = [{ filename: `Invoice-${invoiceNumber(order)}.pdf`, content: generateInvoicePdf(order, st) }]; }
+      catch (e) { console.error('Invoice PDF failed:', e.message); }
+      sendLater({ to: user.email, ...templates.orderPlaced(order, user), attachments });
+    }).catch(() => sendLater({ to: user.email, ...templates.orderPlaced(order, user) }));
 
     res.status(201).json(order);
   } catch (err) {
@@ -497,6 +515,25 @@ router.post('/cashfree/create-order', async (req, res) => {
     if (!response.ok) throw new Error(data.message || 'Cashfree order creation failed');
     res.json({ orderId, paymentSessionId: data.payment_session_id, liveMode: content.cashfreeLiveMode });
   } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// GET /api/orders/:id/invoice.pdf — download the PDF invoice (the customer,
+// the order's sellers, or an admin)
+router.get('/:id/invoice.pdf', async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    const me = await User.findById(req.userId).select('role');
+    const isOwner = String(order.user) === String(req.userId);
+    const isSeller = order.items.some((i) => i.seller && String(i.seller) === String(req.userId));
+    if (!isOwner && !isSeller && me?.role !== 'admin') return res.status(403).json({ message: 'Not allowed' });
+    const pdf = generateInvoicePdf(order, await Settings.get());
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Invoice-${invoiceNumber(order)}.pdf"`);
+    res.send(pdf);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 module.exports = router;

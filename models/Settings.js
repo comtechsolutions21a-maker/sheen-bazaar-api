@@ -27,6 +27,15 @@ const settingsSchema = new mongoose.Schema(
     gstin: { type: String, default: '' },
     gstEnabled: { type: Boolean, default: false },
     gstPercent: { type: Number, default: 18 }, // default GST slab; seller/admin can override per product later
+    // Delivery & pincodes (comma separated pincodes or prefixes; empty = everywhere)
+    serviceablePincodes: { type: String, default: '' }, // only deliver here (empty = all India)
+    blockedPincodes: { type: String, default: '' },     // never deliver here
+    codPincodes: { type: String, default: '' },         // COD only here (empty = COD everywhere)
+    fastPincodes: { type: String, default: '' },        // local area with faster delivery
+    fastDeliveryDays: { type: Number, default: 2 },
+    // Push notification keys (generated automatically on first use)
+    vapidPublicKey: { type: String, default: '' },
+    vapidPrivateKey: { type: String, default: '' },
     // Referral program
     referralRewardAmount: { type: Number, default: 50 }, // shown to users as the referral reward amount; not auto-credited anywhere
   },

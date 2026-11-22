@@ -13,6 +13,7 @@ const adminRoutes = require('./routes/admin');
 const publicRoutes = require('./routes/public');
 const feedbackRoutes = require('./routes/feedback');
 const chatRoutes = require('./routes/chat');
+const pushRoutes = require('./routes/push');
 const { startAbandonedCartJob } = require('./utils/abandonedCart');
 
 const app = express();
@@ -61,6 +62,7 @@ app.use('/api/admin', publicRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/push', pushRoutes);
 
 // Global error handler
 app.use((err, req, res, next) => {
