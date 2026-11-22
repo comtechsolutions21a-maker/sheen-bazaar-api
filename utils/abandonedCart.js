@@ -1,6 +1,6 @@
 const User = require('../models/User');
 const { buildCartResponse } = require('../routes/cart');
-const { sendMail } = require('./mailer');
+const { sendMail, templates, isRealEmail } = require('./mailer');
 
 const SITE_URL = process.env.CLIENT_ORIGIN?.split(',')[0] || 'https://sheenbazaar.online';
 
@@ -24,15 +24,9 @@ async function sendAbandonedCartReminders() {
       const cart = await buildCartResponse(user);
       if (!cart.items.length) continue;
 
-      const itemLines = cart.items.slice(0, 5).map((i) => `- ${i.product.name} x${i.qty}`).join('\n');
-      const moreCount = cart.items.length > 5 ? cart.items.length - 5 : 0;
-
-      await sendMail({
-        to: user.email,
-        subject: `You left something in your cart, ${user.name.split(' ')[0]}!`,
-        text: `You still have ${cart.count} item(s) waiting in your Sheen Bazaar cart:\n\n${itemLines}${moreCount ? `\n...and ${moreCount} more` : ''}\n\nTotal: ₹${cart.total}\n\nComplete your order: ${SITE_URL}/cart`,
-        html: `<p>You still have <strong>${cart.count} item(s)</strong> waiting in your Sheen Bazaar cart.</p><p>Total: <strong>₹${cart.total}</strong></p><p><a href="${SITE_URL}/cart">Complete your order →</a></p>`,
-      });
+      if (!isRealEmail(user.email)) continue;
+      const result = await sendMail({ to: user.email, ...templates.abandonedCart(user, cart) });
+      if (!result.sent && !result.simulated) continue; // try again next round
 
       user.lastAbandonedCartEmailAt = new Date();
       await user.save();

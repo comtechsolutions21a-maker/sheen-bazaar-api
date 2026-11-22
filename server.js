@@ -45,23 +45,8 @@ app.use(express.json({ limit: '8mb' }));
 // Health-check — useful for Render's uptime monitor.
 app.get('/api/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
-// ⚠️ TEMPORARY — one-time admin promotion route, since Render's free plan has
-// no Shell access to run scripts/makeAdmin.js directly. Protected by a secret
-// query param so it can't be triggered by anyone who doesn't know it.
-// DELETE THIS ENTIRE BLOCK (and remove the import above it) once you've used
-// it — it should never stay live on a production site.
-const User = require('./models/User');
-app.get('/api/one-time-make-admin', async (req, res) => {
-  const { email, secret } = req.query;
-  if (secret !== process.env.JWT_SECRET) return res.status(403).json({ message: 'Invalid secret' });
-  if (!email) return res.status(400).json({ message: 'Provide ?email=youremail@example.com' });
-  const user = await User.findOne({ email: String(email).toLowerCase() });
-  if (!user) return res.status(404).json({ message: `No account found with email: ${email}` });
-  const previousRole = user.role;
-  user.role = 'admin';
-  await user.save();
-  res.json({ success: true, message: `${user.email} promoted from "${previousRole}" to "admin". DELETE this route from server.js now.` });
-});
+// (Removed the temporary /api/one-time-make-admin route — it let anyone who
+// learned JWT_SECRET make themselves admin. Use `npm run make-admin` instead.)
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);

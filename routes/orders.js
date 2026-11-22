@@ -4,8 +4,7 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const ResellerListing = require('../models/ResellerListing');
 const auth = require('../middleware/auth');
-const { sendMail } = require('../utils/mailer');
-const { chargeOnline } = require('../utils/payments');
+const { sendLater, templates, notifyOrderStatus } = require('../utils/mailer');
 const { applyCommission } = require('../utils/commission');
 const Settings = require('../models/Settings');
 
@@ -76,18 +75,8 @@ async function notifySellers(order) {
   const sellers = await User.find({ _id: { $in: sellerIds } });
   for (const seller of sellers) {
     const myItems = order.items.filter((i) => String(i.seller) === String(seller._id));
-    const lines = myItems.map((i) => `  • ${i.name} × ${i.qty} — ₹${i.basePrice * i.qty}`).join('\n');
     const myTotal = myItems.reduce((sum, i) => sum + i.basePrice * i.qty, 0);
-
-    sendMail({
-      to: seller.email,
-      subject: `New order #${String(order._id).slice(-6).toUpperCase()} on Sheen Bazaar`,
-      text:
-        `Hi ${seller.businessName || seller.name},\n\n` +
-        `You've received a new order:\n\n${lines}\n\n` +
-        `Your total: ₹${myTotal}\n\n` +
-        `Log in to your seller dashboard to confirm and fulfill it.`,
-    }).catch((err) => console.error('notifySellers failed:', err.message));
+    sendLater({ to: seller.email, ...templates.sellerNewOrder(order, seller, myItems, myTotal) });
   }
 }
 
@@ -171,8 +160,8 @@ router.post('/', async (req, res) => {
 
     // Step 6 — Payment:
     // - COD is collected later at delivery.
-    // - UPI/CARD here refers to the site's own simulated instant-charge path
-    //   (utils/payments.chargeOnline), kept for any flow still using it.
+    // - Anything else (e.g. a raw 'UPI'/'CARD') is rejected — those used to be
+    //   auto-marked paid with no real payment behind them.
     // - RAZORPAY/CASHFREE come from the real gateway popup on Checkout — the
     //   frontend already collected the payment signature, so we verify it
     //   here before ever marking the order paid. If verification fails or
@@ -182,13 +171,11 @@ router.post('/', async (req, res) => {
     let paymentStatus = 'pending';
     let transactionId = '';
 
-    if (method === 'UPI' || method === 'CARD') {
-      const charge = chargeOnline(method, total);
-      if (!charge.success) {
-        return res.status(402).json({ message: 'Payment failed. Please try again or choose Cash on Delivery.' });
-      }
-      paymentStatus = 'paid';
-      transactionId = charge.transactionId;
+    if (!['COD', 'RAZORPAY', 'CASHFREE'].includes(method)) {
+      // 'UPI'/'CARD' used to be auto-marked PAID by a fake charge function, so
+      // anyone could call the API directly and get a "paid" order without
+      // paying. Real UPI/card payments go through Razorpay/Cashfree instead.
+      return res.status(400).json({ message: 'Please pay with UPI/Card through the payment window, or choose Cash on Delivery.' });
     } else if (method === 'RAZORPAY' && razorpayOrderId && razorpayPaymentId && razorpaySignature) {
       const SiteContent = require('../models/SiteContent');
       const crypto = require('crypto');
@@ -197,6 +184,10 @@ router.post('/', async (req, res) => {
         .update(razorpayOrderId + '|' + razorpayPaymentId)
         .digest('hex');
       if (expectedSign === razorpaySignature) {
+        // Stop one real payment being reused to mark many orders as paid
+        if (await Order.exists({ transactionId: razorpayPaymentId })) {
+          return res.status(400).json({ message: 'This payment has already been used for another order.' });
+        }
         paymentStatus = 'paid';
         transactionId = razorpayPaymentId;
       } else {
@@ -216,9 +207,12 @@ router.post('/', async (req, res) => {
         });
         const payments = await cfRes.json();
         const successPayment = Array.isArray(payments) ? payments.find(p => p.payment_status === 'SUCCESS') : null;
+        if (successPayment && await Order.exists({ transactionId: String(successPayment.cf_payment_id) })) {
+          return res.status(400).json({ message: 'This payment has already been used for another order.' });
+        }
         if (successPayment) {
           paymentStatus = 'paid';
-          transactionId = successPayment.cf_payment_id;
+          transactionId = String(successPayment.cf_payment_id);
         } else {
           return res.status(400).json({ message: 'Payment not confirmed by Cashfree yet. Please contact support before retrying.' });
         }
@@ -269,6 +263,8 @@ router.post('/', async (req, res) => {
 
     // Fire-and-forget: don't make the customer wait on email delivery.
     notifySellers(order).catch((err) => console.error('notifySellers failed:', err.message));
+    // Customer's own order-confirmation email (from the no-reply address)
+    sendLater({ to: user.email, ...templates.orderPlaced(order, user) });
 
     res.status(201).json(order);
   } catch (err) {
@@ -310,6 +306,7 @@ router.post('/:id/return', async (req, res) => {
   order.status = 'return_requested';
   order.statusHistory.push({ status: 'return_requested', note: `Customer requested return: ${reason}`, updatedBy: 'customer' });
   await order.save();
+  notifyOrderStatus(order, 'return_requested');
   res.json(order);
 });
 
@@ -352,6 +349,7 @@ router.post('/:id/cancel', async (req, res) => {
     }
 
     await order.save();
+    notifyOrderStatus(order, 'cancelled');
     res.json(order);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });

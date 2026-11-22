@@ -5,6 +5,7 @@ const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 
+const { sendMail, sendLater, templates } = require('../utils/mailer');
 const router = express.Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -140,6 +141,7 @@ router.post('/signup', async (req, res) => {
       referredBy,
     });
     const token = signToken(user._id);
+    sendLater({ to: user.email, ...templates.welcome(user) });
     res.status(201).json({ token, user: user.toSafeJSON() });
   } catch (err) {
     res.status(500).json({ message: 'Signup failed', error: err.message });
@@ -190,6 +192,7 @@ async function findOrCreateSocialUser({ providerField, providerId, email, name, 
     role: 'customer',
     [providerField]: providerId,
   });
+  sendLater({ to: user.email, ...templates.welcome(user) });
   return user;
 }
 
@@ -368,31 +371,10 @@ router.post('/send-email-otp', async (req, res) => {
     const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
     emailOtpStore.set(email.toLowerCase(), { otp, expiresAt, attempts: 0 });
 
-    // Send via nodemailer if SMTP configured, else log
-    if (process.env.SMTP_HOST) {
-      const nodemailer = require('nodemailer');
-      const transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT || 587,
-        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-      });
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || 'Sheen Bazaar <noreply@sheenbazaar.com>',
-        to: email,
-        subject: `Your Sheen Bazaar OTP: ${otp}`,
-        html: `
-          <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#FFF6F2;border-radius:16px">
-            <h2 style="color:#A8114F;margin:0 0 8px">🛍️ Sheen Bazaar</h2>
-            <p style="color:#2B1330;font-size:15px">Your one-time login code is:</p>
-            <div style="font-size:42px;font-weight:900;letter-spacing:10px;color:#D9276B;text-align:center;padding:20px;background:#fff;border-radius:12px;margin:16px 0">${otp}</div>
-            <p style="color:#8A7A87;font-size:13px">This OTP expires in 5 minutes. Do not share it with anyone.</p>
-            <hr style="border:none;border-top:1px solid #EFE1E7;margin:20px 0">
-            <p style="color:#8A7A87;font-size:12px">If you didn't request this, ignore this email.</p>
-          </div>
-        `,
-      });
-    } else {
-      console.log(`[EMAIL OTP] To: ${email} | OTP: ${otp}`);
+    const result = await sendMail({ to: email, ...templates.otp(otp) });
+    if (result.simulated) console.log(`[EMAIL OTP] To: ${email} | OTP: ${otp}`);
+    if (!result.sent && !result.simulated) {
+      return res.status(500).json({ message: 'Could not send the OTP email. Please try again in a minute.' });
     }
 
     res.json({ success: true, message: `OTP sent to ${email}` });
@@ -434,6 +416,7 @@ router.post('/verify-email-otp', async (req, res) => {
         password: Math.random().toString(36) + Math.random().toString(36),
         role: 'customer',
       });
+      sendLater({ to: user.email, ...templates.welcome(user) });
     }
 
     const token = signToken(user._id);

@@ -10,6 +10,7 @@ const auth = require('../middleware/auth');
 const requireRole = require('../middleware/role');
 const { recordCodCollection } = require('../utils/payments');
 const { applyCommission } = require('../utils/commission');
+const { sendMail, templates, notifyOrderStatus, isConfigured, fromAddress, provider } = require('../utils/mailer');
 
 const router = express.Router();
 router.use(auth(true), requireRole('admin'));
@@ -148,28 +149,52 @@ router.patch('/users/:id/reset-password', async (req, res) => {
 
 router.post('/users/:id/email', async (req, res) => {
   const { subject, message } = req.body;
+  if (!subject || !message) return res.status(400).json({ message: 'Subject and message are required' });
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  if (process.env.SMTP_HOST) {
-    const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: process.env.SMTP_PORT || 587, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } });
-    await transporter.sendMail({ from: process.env.SMTP_FROM || 'Sheen Bazaar <noreply@sheenbazaar.online>', to: user.email, subject, html: `<div style="font-family:sans-serif;max-width:600px;margin:auto"><h2>${subject}</h2><p>${message}</p></div>` });
-  } else { console.log(`[EMAIL] To: ${user.email} | ${subject}`); }
-  res.json({ success: true });
+  const result = await sendMail({ to: user.email, ...templates.adminMessage(user, subject, message) });
+  if (result.skipped) return res.status(400).json({ message: 'This user has no real email address (signed up with phone/X).' });
+  if (!result.sent && !result.simulated) return res.status(500).json({ message: `Email failed: ${result.error}` });
+  res.json({ success: true, simulated: !!result.simulated });
 });
 
 router.post('/users/broadcast-email', async (req, res) => {
   const { subject, message, role } = req.body;
+  if (!subject || !message) return res.status(400).json({ message: 'Subject and message are required' });
   const filter = role && role !== 'all' ? { role } : {};
   const users = await User.find(filter).select('email name');
-  if (process.env.SMTP_HOST) {
-    const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: process.env.SMTP_PORT || 587, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } });
+  // Answer the admin right away; send in the background so a big list
+  // doesn't time out the request.
+  res.json({ success: true, sent: users.length, queued: true });
+  (async () => {
+    let ok = 0, failed = 0;
     for (const u of users) {
-      await transporter.sendMail({ from: process.env.SMTP_FROM || 'Sheen Bazaar <noreply@sheenbazaar.online>', to: u.email, subject, html: `<div style="font-family:sans-serif;max-width:600px;margin:auto"><h2>Hi ${u.name},</h2><p>${message}</p></div>` });
+      const r = await sendMail({ to: u.email, ...templates.adminMessage(u, subject, message) });
+      if (r.sent || r.simulated) ok++; else if (!r.skipped) failed++;
     }
-  } else { console.log(`[BROADCAST] ${subject} → ${users.length} users`); }
-  res.json({ success: true, sent: users.length });
+    console.log(`[BROADCAST] "${subject}" → sent ${ok}, failed ${failed}, total ${users.length}`);
+  })().catch(err => console.error('Broadcast failed:', err.message));
+});
+
+// ─── NO-REPLY EMAIL: status + test ───
+// GET /api/admin/email/status — is SMTP set up, and which address sends.
+router.get('/email/status', (req, res) => {
+  res.json({
+    configured: isConfigured(),
+    from: fromAddress(),
+    replyTo: process.env.SUPPORT_EMAIL || '',
+    provider: provider() || '',
+  });
+});
+
+// POST /api/admin/email/test { to } — sends a sample email (defaults to the admin's own email).
+router.post('/email/test', async (req, res) => {
+  const to = (req.body?.to || req.user.email || '').trim();
+  if (!isConfigured()) return res.status(400).json({ message: 'Email is not set up yet. Add BREVO_API_KEY, MAIL_FROM and SUPPORT_EMAIL on the server (Render → Environment).' });
+  const result = await sendMail({ to, ...templates.test() });
+  if (result.skipped) return res.status(400).json({ message: 'Enter a valid email address.' });
+  if (!result.sent) return res.status(500).json({ message: `Sending failed: ${result.error}` });
+  res.json({ success: true, to });
 });
 
 router.delete('/users/:id', async (req, res) => {
@@ -232,6 +257,7 @@ router.patch('/orders/:id/status', async (req, res) => {
   if (!allowed.includes(status)) return res.status(400).json({ message: 'Invalid status' });
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ message: 'Order not found' });
+  const previousStatus = order.status;
   order.status = status;
   order.statusHistory.push({ status, note: note || '' });
   if (status === 'delivered' && order.paymentMethod === 'COD' && order.paymentStatus !== 'paid') {
@@ -241,6 +267,7 @@ router.patch('/orders/:id/status', async (req, res) => {
     await applyCommission(order);
   }
   await order.save();
+  if (previousStatus !== status) notifyOrderStatus(order, status);
   res.json(order);
 });
 

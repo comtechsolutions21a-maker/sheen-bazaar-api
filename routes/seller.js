@@ -7,6 +7,7 @@ const { APPROVED_COURIERS, PLATFORM_COURIER_NAME } = require('../constants');
 const { recordCodCollection } = require('../utils/payments');
 const { applyCommission } = require('../utils/commission');
 
+const { notifyOrderStatus } = require('../utils/mailer');
 const router = express.Router();
 router.use(auth(true), requireRole('seller'));
 
@@ -181,6 +182,7 @@ router.patch('/orders/:id/status', async (req, res) => {
     }
   }
 
+  const previousStatus = order.status;
   order.status = status;
   order.statusHistory.push({ status, note: note || '' });
 
@@ -207,6 +209,7 @@ router.patch('/orders/:id/status', async (req, res) => {
   }
 
   await order.save();
+  if (previousStatus !== status) notifyOrderStatus(order, status);
   res.json(order);
 });
 
@@ -218,6 +221,7 @@ router.patch('/orders/:id/return', async (req, res) => {
   order.returnStatus = action === 'approve' ? 'approved' : 'rejected';
   if (action === 'approve') { order.status = 'returned'; order.statusHistory.push({ status: 'returned', note: 'Return approved by seller', updatedBy: 'seller' }); }
   await order.save();
+  notifyOrderStatus(order, action === 'approve' ? 'returned' : 'return_rejected');
   res.json(order);
 });
 
