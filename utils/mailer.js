@@ -344,8 +344,8 @@ async function notifyOrderStatus(order, status) {
     // Phone notification too (if the customer turned them on)
     const c = STATUS_COPY[st];
     if (c) {
-      const { pushLater } = require('./push');
-      pushLater(user._id, { title: `${c.emoji} ${c.title}`, body: `Order #${orderNo(order)} • ${c.line}`, url: `/orders/${order._id}`, tag: `order-${order._id}` });
+      const { notifyLater } = require('./notify');
+      notifyLater(user._id, { title: `${c.emoji} ${c.title}`, body: `Order #${orderNo(order)} • ${c.line}`, url: `/orders/${order._id}`, tag: `order-${order._id}`, type: 'order' });
     }
   } catch (err) {
     console.error('notifyOrderStatus failed:', err.message);

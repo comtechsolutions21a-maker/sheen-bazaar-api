@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const { buildCartResponse } = require('../routes/cart');
 const { sendMail, templates, isRealEmail } = require('./mailer');
+const { notifyUser } = require('./notify');
 
 const SITE_URL = process.env.CLIENT_ORIGIN?.split(',')[0] || 'https://sheenbazaar.online';
 
@@ -24,9 +25,17 @@ async function sendAbandonedCartReminders() {
       const cart = await buildCartResponse(user);
       if (!cart.items.length) continue;
 
-      if (!isRealEmail(user.email)) continue;
-      const result = await sendMail({ to: user.email, ...templates.abandonedCart(user, cart) });
-      if (!result.sent && !result.simulated) continue; // try again next round
+      // Phone notification + inbox (works even for phone-number accounts without email)
+      const first = cart.items[0]?.product?.name || 'your items';
+      await notifyUser(user._id, {
+        title: '🛒 You left something in your cart',
+        body: cart.items.length > 1 ? `${first} and ${cart.items.length - 1} more are waiting — ₹${cart.total}. Complete your order before they sell out!` : `${first} is waiting for you — complete your order before it sells out!`,
+        url: '/cart', type: 'offer', tag: 'abandoned-cart',
+      });
+      if (isRealEmail(user.email)) {
+        const result = await sendMail({ to: user.email, ...templates.abandonedCart(user, cart) });
+        if (!result.sent && !result.simulated) continue; // try again next round
+      }
 
       user.lastAbandonedCartEmailAt = new Date();
       await user.save();

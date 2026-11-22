@@ -181,6 +181,40 @@ router.post('/users/broadcast-email', async (req, res) => {
   })().catch(err => console.error('Broadcast failed:', err.message));
 });
 
+// ─── PUSH CAMPAIGNS (offers sent to phones) ───
+const Campaign = require('../models/Campaign');
+const { AUDIENCES, audienceCounts, runCampaign } = require('../utils/campaigns');
+
+router.get('/campaigns', async (req, res) => {
+  const [list, counts] = await Promise.all([Campaign.find().sort({ createdAt: -1 }).limit(50), audienceCounts()]);
+  res.json({ campaigns: list, audiences: counts });
+});
+
+// POST { title, body, url, image, audience, scheduledAt? } — no scheduledAt = send now
+router.post('/campaigns', async (req, res) => {
+  const title = String(req.body.title || '').trim().slice(0, 70);
+  const body = String(req.body.body || '').trim().slice(0, 200);
+  const audience = AUDIENCES[req.body.audience] ? req.body.audience : 'all';
+  if (!title || !body) return res.status(400).json({ message: 'Title and message are required' });
+  let scheduledAt = req.body.scheduledAt ? new Date(req.body.scheduledAt) : null;
+  if (scheduledAt && Number.isNaN(scheduledAt.getTime())) scheduledAt = null;
+  if (scheduledAt && scheduledAt <= new Date()) scheduledAt = null;
+  let url = String(req.body.url || '/offers').trim();
+  if (!url.startsWith('/') && !/^https:\/\//.test(url)) url = '/offers';
+  const c = await Campaign.create({ title, body, url, image: String(req.body.image || '').trim(), audience, scheduledAt, status: 'scheduled' });
+  if (!scheduledAt) {
+    const sent = await runCampaign(c);
+    return res.json(sent || c);
+  }
+  res.json(c);
+});
+
+router.delete('/campaigns/:id', async (req, res) => {
+  const c = await Campaign.findOneAndUpdate({ _id: req.params.id, status: 'scheduled' }, { $set: { status: 'cancelled' } }, { new: true });
+  if (!c) return res.status(400).json({ message: 'Only scheduled campaigns can be cancelled' });
+  res.json(c);
+});
+
 // ─── NO-REPLY EMAIL: status + test ───
 // GET /api/admin/email/status — is SMTP set up, and which address sends.
 router.get('/email/status', (req, res) => {
@@ -233,9 +267,12 @@ router.patch('/products/:id', async (req, res) => {
   const product = await Product.findOne({ id: Number(req.params.id) });
   if (!product) return res.status(404).json({ message: 'Product not found' });
   const wasOutOfStock = product.stock === 0;
+  const { onProductPriceChange, snapshot } = require('../utils/priceWatch');
+  const before = snapshot(product);
   const allowed = ['active','name','price','old','stock','badge','desc','icon','image','images','cat','brand','featured','flashPrice','flashEndsAt','deliveryDays','returnDays','approved'];
   allowed.forEach(k => { if (req.body[k] !== undefined) product[k] = req.body[k]; });
   await product.save();
+  onProductPriceChange(before, product);
   if (wasOutOfStock && product.stock > 0) {
     const { notifyBackInStock } = require('../utils/stockAlerts');
     notifyBackInStock(product).catch((err) => console.error('notifyBackInStock failed:', err.message));
@@ -612,8 +649,8 @@ router.post('/chat/threads/:id/reply', async (req, res) => {
   thread.unreadByCustomer = true;
   await thread.save();
   // Let the customer know on their phone
-  const { pushLater } = require('../utils/push');
-  pushLater(thread.user, { title: '💬 Sheen Bazaar Support replied', body: text.trim().slice(0, 120), url: '/?chat=1', tag: 'support-chat' });
+  const { notifyLater } = require('../utils/notify');
+  notifyLater(thread.user, { title: '💬 Sheen Bazaar Support replied', body: text.trim().slice(0, 120), url: '/?chat=1', tag: 'support-chat', type: 'chat' });
   res.json(thread);
 });
 

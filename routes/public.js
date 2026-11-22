@@ -35,7 +35,7 @@ router.get('/public/offers', async (req, res) => {
   const settings = await Settings.get();
   const now = new Date();
   const coupons = (settings.coupons || [])
-    .filter(c => c && c.active !== false && c.showOnOffers !== false &&
+    .filter(c => c && !c.userId && c.active !== false && c.showOnOffers !== false &&
       (c.maxUses == null || (c.uses || 0) < c.maxUses) &&
       (!c.expiresAt || new Date(c.expiresAt) >= now))
     .map(c => ({

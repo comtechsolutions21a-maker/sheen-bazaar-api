@@ -5,7 +5,7 @@ const Order = require('../models/Order');
 const ResellerListing = require('../models/ResellerListing');
 const auth = require('../middleware/auth');
 const { sendLater, templates, notifyOrderStatus } = require('../utils/mailer');
-const { pushLater } = require('../utils/push');
+const { notifyLater } = require('../utils/notify');
 const { generateInvoicePdf, invoiceNumber } = require('../utils/invoicePdf');
 const { applyCommission } = require('../utils/commission');
 const { effectivePrice } = require('../utils/pricing');
@@ -81,7 +81,7 @@ async function notifySellers(order) {
     const myItems = order.items.filter((i) => String(i.seller) === String(seller._id));
     const myTotal = myItems.reduce((sum, i) => sum + i.basePrice * i.qty, 0);
     sendLater({ to: seller.email, ...templates.sellerNewOrder(order, seller, myItems, myTotal) });
-    pushLater(seller._id, { title: '🛒 New order received!', body: `Order #${String(order._id).slice(-6).toUpperCase()} • ₹${myTotal} — open your dashboard to confirm it.`, url: '/seller', tag: `seller-order-${order._id}` });
+    notifyLater(seller._id, { title: '🛒 New order received!', body: `Order #${String(order._id).slice(-6).toUpperCase()} • ₹${myTotal} — open your dashboard to confirm it.`, url: '/seller', tag: `seller-order-${order._id}`, type: 'order' });
   }
 }
 
@@ -152,12 +152,16 @@ router.post('/', async (req, res) => {
     if (couponCode) {
       const settings = await Settings.get();
       const coupon = settings.coupons.find(c => c.code.toUpperCase() === String(couponCode).toUpperCase());
-      if (coupon && coupon.active && coupon.uses < coupon.maxUses &&
+      if (coupon && coupon.active !== false && (coupon.uses || 0) < coupon.maxUses &&
+          (!coupon.userId || String(coupon.userId) === String(req.userId)) && // personal (Spin & Win) codes: owner only
           (!coupon.expiresAt || new Date(coupon.expiresAt) >= new Date()) &&
           (!coupon.minOrderValue || itemsTotal >= coupon.minOrderValue)) {
         discount = Math.floor((itemsTotal * coupon.discountPercent) / 100);
         appliedCouponCode = coupon.code;
-        coupon.uses += 1;
+        coupon.uses = (coupon.uses || 0) + 1;
+        // coupons is a plain array, so Mongoose must be told it changed —
+        // without this the use count was never saved and limits never applied.
+        settings.markModified('coupons');
         await settings.save();
       }
     }
@@ -429,7 +433,8 @@ router.post('/validate-coupon', async (req, res) => {
     const coupon = settings.coupons.find(c => c.code.toUpperCase() === String(code).toUpperCase());
 
     if (!coupon) return res.status(404).json({ message: 'Invalid coupon code' });
-    if (!coupon.active) return res.status(400).json({ message: 'This coupon is no longer active' });
+    if (coupon.userId && String(coupon.userId) !== String(req.userId)) return res.status(404).json({ message: 'Invalid coupon code' });
+    if (coupon.active === false) return res.status(400).json({ message: 'This coupon is no longer active' });
     if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
       return res.status(400).json({ message: 'This coupon has expired' });
     }

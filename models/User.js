@@ -17,6 +17,12 @@ const userSchema = new mongoose.Schema(
 
     // Cart is stored server-side as { productId: qty } so it persists across devices.
     cart: { type: Map, of: Number, default: {} },
+    // Wishlisted product ids (synced from the app) — used for price-drop alerts
+    wishlist: { type: [Number], default: [] },
+    // "Tell me when it drops below ₹X"
+    priceAlerts: { type: [{ productId: Number, targetPrice: Number, createdAt: { type: Date, default: Date.now } }], default: [] },
+    // Spin & Win
+    lastSpinAt: { type: Date, default: null },
     cartUpdatedAt: { type: Date, default: null },
     lastAbandonedCartEmailAt: { type: Date, default: null },
 

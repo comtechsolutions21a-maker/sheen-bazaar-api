@@ -8,6 +8,7 @@ const { recordCodCollection } = require('../utils/payments');
 const { applyCommission } = require('../utils/commission');
 
 const { notifyOrderStatus } = require('../utils/mailer');
+const { onProductPriceChange, snapshot } = require('../utils/priceWatch');
 const router = express.Router();
 router.use(auth(true), requireRole('seller'));
 
@@ -83,10 +84,12 @@ router.put('/products/:id', async (req, res) => {
   if (!product) return res.status(404).json({ message: 'Listing not found' });
 
   const wasOutOfStock = product.stock === 0;
+  const before = snapshot(product);
   const data = pickProductFields(req.body);
   Object.assign(product, data);
   if (req.body.active !== undefined) product.active = !!req.body.active && !!req.user.sellerApproved;
   await product.save();
+  onProductPriceChange(before, product); // automatic price-drop / flash-sale alerts
   if (wasOutOfStock && product.stock > 0) {
     const { notifyBackInStock } = require('../utils/stockAlerts');
     notifyBackInStock(product).catch((err) => console.error('notifyBackInStock failed:', err.message));

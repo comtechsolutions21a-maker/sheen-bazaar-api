@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 // One row per device/browser that turned on order notifications.
 const pushSubscriptionSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true }, // null = guest (offers only)
   endpoint: { type: String, required: true, unique: true },
   keys: {
     p256dh: { type: String, required: true },

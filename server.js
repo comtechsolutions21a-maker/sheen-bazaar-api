@@ -14,7 +14,9 @@ const publicRoutes = require('./routes/public');
 const feedbackRoutes = require('./routes/feedback');
 const chatRoutes = require('./routes/chat');
 const pushRoutes = require('./routes/push');
+const meRoutes = require('./routes/me');
 const { startAbandonedCartJob } = require('./utils/abandonedCart');
+const { startCampaignJob } = require('./utils/campaigns');
 
 const app = express();
 
@@ -63,6 +65,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/push', pushRoutes);
+app.use('/api/me', meRoutes);
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -80,4 +83,5 @@ const PORT = process.env.PORT || 5000;
 connectDB().then(() => {
   app.listen(PORT, '0.0.0.0', () => console.log(`Sheen Bazaar API running on port ${PORT}`));
   startAbandonedCartJob();
+  startCampaignJob();
 });
