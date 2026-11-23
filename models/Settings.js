@@ -33,6 +33,11 @@ const settingsSchema = new mongoose.Schema(
     codPincodes: { type: String, default: '' },         // COD only here (empty = COD everywhere)
     fastPincodes: { type: String, default: '' },        // local area with faster delivery
     fastDeliveryDays: { type: Number, default: 2 },
+    // Delivery charges: customer pays deliveryFee (free at/above freeDeliveryAbove; 0 = never free),
+    // and when chargeSellerShipping is on, the rest of the courier cost comes out of the seller's payout
+    deliveryFee: { type: Number, default: 49, min: 0 },
+    freeDeliveryAbove: { type: Number, default: 499, min: 0 },
+    chargeSellerShipping: { type: Boolean, default: true },
     // Push notification keys (generated automatically on first use)
     vapidPublicKey: { type: String, default: '' },
     vapidPrivateKey: { type: String, default: '' },

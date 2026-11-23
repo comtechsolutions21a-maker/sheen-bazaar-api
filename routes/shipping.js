@@ -7,6 +7,7 @@ const Order = require('../models/Order');
 const SiteContent = require('../models/SiteContent');
 const sr = require('../utils/shiprocket');
 const { advanceOrder } = require('../utils/orderFlow');
+const { deliveryRule, splitCourierCost, customerShareFor } = require('../utils/delivery');
 
 const router = express.Router();
 
@@ -67,8 +68,15 @@ router.get('/orders/:id/rates', auth(true), sellerOnly, async (req, res) => {
   if (!(await sr.isEnabled())) return res.status(400).json({ message: 'Automatic courier is not switched on.' });
   const order = await Order.findOne({ _id: req.params.id, 'items.seller': req.user._id });
   if (!order) return res.status(404).json({ message: 'Order not found' });
-  try { res.json(await sr.courierRates(order, req.user, { weightKg: req.query.weightKg })); }
-  catch (err) { res.status(400).json({ message: err.message }); }
+  try {
+    const rates = await sr.courierRates(order, req.user, { weightKg: req.query.weightKg });
+    const rule = await deliveryRule();
+    // For each courier: how much the seller pays after the customer's delivery fee
+    rates.customerPaid = customerShareFor(order, req.user._id);
+    rates.chargeSellers = rule.chargeSellers;
+    rates.couriers = rates.couriers.map((c) => ({ ...c, sellerPays: splitCourierCost(order, req.user._id, c.price, rule).sellerCharge }));
+    res.json(rates);
+  } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
 // ── Seller: book courier for an order (one click) ──
@@ -81,9 +89,21 @@ router.post('/orders/:id/book', auth(true), sellerOnly, async (req, res) => {
   const existing = (order.shipments || []).find((s) => String(s.seller) === String(req.user._id) && s.awb);
   if (existing) return res.status(400).json({ message: `Courier already booked: ${existing.courierName} (AWB ${existing.awb}).` });
 
+  // Prices first, so we know what this booking costs (best effort)
+  let rates = null;
+  try { rates = await sr.courierRates(order, req.user, req.body || {}); } catch { /* booking still goes ahead */ }
+
   let shipment;
   try { shipment = await sr.createShipment(order, req.user, req.body || {}); }
   catch (err) { return res.status(400).json({ message: err.message }); }
+
+  if (shipment.awb) {
+    const list = rates?.couriers || [];
+    const picked = list.find((c) => c.id === Number(shipment.courierId))
+      || list.find((c) => c.name && shipment.courierName && c.name.toLowerCase() === shipment.courierName.toLowerCase());
+    const cost = picked ? picked.price : (Number(shipment.cost) || 0);
+    Object.assign(shipment, splitCourierCost(order, req.user._id, cost, await deliveryRule()));
+  }
 
   order.shipments = (order.shipments || []).filter((s) => String(s.seller) !== String(req.user._id));
   order.shipments.push(shipment);

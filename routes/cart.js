@@ -5,6 +5,7 @@ const ResellerListing = require('../models/ResellerListing');
 const auth = require('../middleware/auth');
 
 const { effectivePrice } = require('../utils/pricing');
+const { deliveryRule, deliveryFeeFor } = require('../utils/delivery');
 const router = express.Router();
 router.use(auth(true));
 
@@ -53,7 +54,7 @@ async function buildCartResponse(user) {
 
   const itemsTotal = items.reduce((sum, i) => sum + i.lineTotal, 0);
   const count = items.reduce((sum, i) => sum + i.qty, 0);
-  const deliveryFee = itemsTotal >= 499 || itemsTotal === 0 ? 0 : 49;
+  const deliveryFee = deliveryFeeFor(itemsTotal, await deliveryRule());
 
   return { items, itemsTotal, count, deliveryFee, total: itemsTotal + deliveryFee };
 }

@@ -8,6 +8,7 @@ const { sendLater, templates, notifyOrderStatus } = require('../utils/mailer');
 const { notifyLater } = require('../utils/notify');
 const { generateInvoicePdf, invoiceNumber } = require('../utils/invoicePdf');
 const { applyCommission } = require('../utils/commission');
+const { deliveryRule, deliveryFeeFor } = require('../utils/delivery');
 const { effectivePrice } = require('../utils/pricing');
 const { checkPincode } = require('../utils/pincode');
 const Settings = require('../models/Settings');
@@ -142,7 +143,7 @@ async function computeCheckout(user, couponCode, userId) {
   }
 
   const itemsTotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
-  const deliveryFee = itemsTotal >= 499 ? 0 : 49;
+  const deliveryFee = deliveryFeeFor(itemsTotal, await deliveryRule());
 
   // Coupon — re-checked here, never trusting the earlier /validate-coupon preview
   let discount = 0;
@@ -427,6 +428,11 @@ router.post('/:id/cancel', async (req, res) => {
       }
     }
 
+    // Cancelled before pickup: Shiprocket returns the money, so the seller isn't charged
+    for (const sh of order.shipments || []) {
+      if (sh.awb) { sh.status = 'cancelled'; sh.sellerCharge = 0; }
+    }
+    order.markModified('shipments');
     await order.save();
     notifyOrderStatus(order, 'cancelled');
     // Cancel any courier booking so no pickup happens

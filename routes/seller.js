@@ -6,6 +6,7 @@ const requireRole = require('../middleware/role');
 const { APPROVED_COURIERS, PLATFORM_COURIER_NAME } = require('../constants');
 const { recordCodCollection } = require('../utils/payments');
 const { applyCommission } = require('../utils/commission');
+const { sellerShippingCharge, round: round2 } = require('../utils/delivery');
 
 const { notifyOrderStatus } = require('../utils/mailer');
 const { onProductPriceChange, snapshot } = require('../utils/priceWatch');
@@ -223,7 +224,8 @@ router.get('/earnings', async (req, res) => {
     // the supplier's payout as settled at that time. Before that, nothing has
     // been split yet, so payout shows as the full (unsettled) amount.
     const commission = myItems.reduce((sum, i) => sum + (i.commissionAmount || 0), 0);
-    const payoutAmount = o.paymentStatus === 'paid' ? myItems.reduce((sum, i) => sum + i.payoutAmount, 0) : grossAmount;
+    const shippingCharge = sellerShippingCharge(o, req.user._id);
+    const payoutAmount = round2((o.paymentStatus === 'paid' ? myItems.reduce((sum, i) => sum + i.payoutAmount, 0) : grossAmount) - shippingCharge);
     const payoutSettled = o.paymentStatus === 'paid' && myItems.every((i) => i.payoutSettled);
 
     if (o.paymentStatus === 'paid') {
@@ -239,6 +241,7 @@ router.get('/earnings', async (req, res) => {
       date: o.createdAt,
       grossAmount,
       commission,
+      shippingCharge,
       amount: payoutAmount,
       payoutSettled,
       commissionPercent: o.commissionPercent,
@@ -265,7 +268,7 @@ router.get('/report', async (req, res) => {
   }
   const monthMap = new Map(months.map((m) => [m.key, m]));
   const products = new Map();
-  const totals = { orders: 0, sales: 0, commission: 0, settled: 0, awaitingPayout: 0, pendingCod: 0, cancelled: 0, returned: 0, delivered: 0 };
+  const totals = { orders: 0, sales: 0, commission: 0, shipping: 0, settled: 0, awaitingPayout: 0, pendingCod: 0, cancelled: 0, returned: 0, delivered: 0 };
 
   for (const o of orders) {
     const mine = o.items.filter((i) => String(i.seller) === me);
@@ -276,9 +279,10 @@ router.get('/report', async (req, res) => {
 
     const gross = mine.reduce((s, i) => s + (i.basePrice ?? i.price) * i.qty, 0);
     const commission = o.paymentStatus === 'paid' ? mine.reduce((s, i) => s + (i.commissionAmount || 0), 0) : 0;
-    const payout = o.paymentStatus === 'paid' ? mine.reduce((s, i) => s + (i.payoutAmount || 0), 0) : gross;
+    const ship = sellerShippingCharge(o, me);
+    const payout = (o.paymentStatus === 'paid' ? mine.reduce((s, i) => s + (i.payoutAmount || 0), 0) : gross) - ship;
 
-    totals.orders++; totals.sales += gross; totals.commission += commission;
+    totals.orders++; totals.sales += gross; totals.commission += commission; totals.shipping += ship;
     if (o.paymentStatus !== 'paid') totals.pendingCod += payout;
     else if (mine.every((i) => i.payoutSettled)) totals.settled += payout;
     else totals.awaitingPayout += payout;

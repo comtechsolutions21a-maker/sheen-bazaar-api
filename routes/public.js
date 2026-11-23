@@ -76,6 +76,12 @@ router.get('/public/gateways', async (req, res) => {
   });
 });
 
+// GET /api/admin/public/delivery — delivery fee rule shown on the site
+router.get('/public/delivery', async (req, res) => {
+  const { fee, freeAbove } = require('../utils/delivery').ruleFrom(await Settings.get());
+  res.json({ fee, freeAbove });
+});
+
 // GET /api/admin/public/tax-config — GST status/rate, for printing compliant invoices
 router.get('/public/tax-config', async (req, res) => {
   const settings = await Settings.get();

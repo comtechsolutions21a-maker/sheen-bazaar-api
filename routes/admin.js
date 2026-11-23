@@ -100,7 +100,11 @@ router.get('/settings', async (req, res) => {
 });
 router.put('/settings', async (req, res) => {
   const settings = await Settings.get();
-  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','whatsappMessage','facebookUrl','instagramUrl','twitterUrl','youtubeUrl','linkedinUrl','pinterestUrl','telegramUrl','threadsUrl','lowStockThreshold','gstin','gstEnabled','gstPercent','referralRewardAmount','serviceablePincodes','blockedPincodes','codPincodes','fastPincodes','fastDeliveryDays'];
+  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','whatsappMessage','facebookUrl','instagramUrl','twitterUrl','youtubeUrl','linkedinUrl','pinterestUrl','telegramUrl','threadsUrl','lowStockThreshold','gstin','gstEnabled','gstPercent','referralRewardAmount','serviceablePincodes','blockedPincodes','codPincodes','fastPincodes','fastDeliveryDays','deliveryFee','freeDeliveryAbove','chargeSellerShipping'];
+  for (const k of ['deliveryFee', 'freeDeliveryAbove']) { // blank/bad numbers keep the old value
+    if (req.body[k] !== undefined) { const n = Number(req.body[k]); if (req.body[k] === '' || !Number.isFinite(n) || n < 0) delete req.body[k]; else req.body[k] = n; }
+  }
+  if (req.body.chargeSellerShipping !== undefined) req.body.chargeSellerShipping = req.body.chargeSellerShipping !== false && req.body.chargeSellerShipping !== 'false';
   allowed.forEach(k => { if (req.body[k] !== undefined) settings[k] = req.body[k]; });
   await settings.save();
   const out = settings.toObject(); delete out.vapidPrivateKey;
@@ -464,8 +468,11 @@ router.get('/payouts', async (req, res) => {
     .populate('items.seller', 'name email businessName')
     .sort({ createdAt: -1 });
 
+  const { sellerShippingCharge } = require('../utils/delivery');
+  const r2 = (n) => Math.round(n * 100) / 100;
   const bySeller = new Map();
   for (const order of orders) {
+    const seen = new Set();
     for (const item of order.items) {
       if (!item.seller) continue;
       const sellerId = String(item.seller._id);
@@ -477,6 +484,7 @@ router.get('/payouts', async (req, res) => {
           businessName: item.seller.businessName,
           pendingAmount: 0,
           settledAmount: 0,
+          shippingCharged: 0,
           orders: new Map(),
         });
       }
@@ -491,13 +499,30 @@ router.get('/payouts', async (req, res) => {
           paymentMethod: order.paymentMethod,
           pendingAmount: 0,
           settledAmount: 0,
+          shippingCharge: 0,
           allSettled: true,
         });
       }
       const o = s.orders.get(String(order._id));
       if (item.payoutSettled) o.settledAmount += item.payoutAmount;
       else { o.pendingAmount += item.payoutAmount; o.allSettled = false; }
+      seen.add(sellerId);
     }
+    // Courier cost the seller pays: taken off this order's payout once
+    for (const sellerId of seen) {
+      const ship = sellerShippingCharge(order, sellerId);
+      if (!ship) continue;
+      const s = bySeller.get(sellerId);
+      const o = s.orders.get(String(order._id));
+      o.shippingCharge = ship;
+      s.shippingCharged += ship;
+      if (o.allSettled) { o.settledAmount -= ship; s.settledAmount -= ship; }
+      else { o.pendingAmount -= ship; s.pendingAmount -= ship; }
+    }
+  }
+  for (const s of bySeller.values()) {
+    s.pendingAmount = r2(s.pendingAmount); s.settledAmount = r2(s.settledAmount); s.shippingCharged = r2(s.shippingCharged);
+    for (const o of s.orders.values()) { o.pendingAmount = r2(o.pendingAmount); o.settledAmount = r2(o.settledAmount); }
   }
 
   const result = [...bySeller.values()]

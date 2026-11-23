@@ -77,8 +77,11 @@ const orderSchema = new mongoose.Schema({
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     provider: { type: String, default: 'shiprocket' },
     ref: String, srOrderId: String, shipmentId: String,
-    awb: { type: String, index: true }, courierName: String, labelUrl: String, trackUrl: String,
+    awb: { type: String, index: true }, courierId: Number, courierName: String, labelUrl: String, trackUrl: String,
     status: String, error: String, etd: Date,
+    // Money: what Shiprocket charged, how much of it the customer's delivery fee covered,
+    // and the rest, taken from the seller's payout
+    cost: { type: Number, default: 0 }, customerPaid: { type: Number, default: 0 }, sellerCharge: { type: Number, default: 0 },
     events: [{ at: String, status: String, activity: String, location: String, _id: false }],
     updatedAt: { type: Date, default: Date.now },
   }],

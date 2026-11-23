@@ -215,6 +215,8 @@ async function createShipment(order, seller, opts = {}) {
   }
   shipment.awb = String(awbData.awb_code);
   shipment.courierName = awbData.courier_name || '';
+  shipment.courierId = Number(awbData.courier_company_id) || Number(opts.courierId) || null;
+  if (Number(awbData.freight_charges) > 0) shipment.cost = Number(awbData.freight_charges);
   shipment.trackUrl = `https://shiprocket.co/tracking/${shipment.awb}`;
   shipment.status = 'awb_assigned';
 
