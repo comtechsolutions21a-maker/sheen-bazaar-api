@@ -155,7 +155,8 @@ router.get('/track/:orderId', auth(true), async (req, res) => {
 // Shiprocket sends the token we show in the admin panel in the "x-api-key" header.
 router.post('/courier-updates', async (req, res) => {
   const content = await SiteContent.get();
-  const token = String(req.headers['x-api-key'] || '');
+  // Token can come as x-api-key (Shiprocket default) or as Authorization: Bearer <token>
+  const token = String(req.headers['x-api-key'] || String(req.headers.authorization || '').replace(/^(Bearer|Token)\s+/i, '') || '').trim();
   const expected = content.shiprocketWebhookToken || '';
   const a = Buffer.from(token); const b = Buffer.from(expected);
   if (!expected || a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ message: 'Bad token' });
