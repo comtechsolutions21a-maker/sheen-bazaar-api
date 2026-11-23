@@ -177,7 +177,10 @@ async function createShipment(order, seller, opts = {}) {
   const mine = order.items.filter((i) => String(i.seller) === String(seller._id));
   if (!mine.length) throw new Error('This order has no items from your shop');
   const sellersInOrder = new Set(order.items.map((i) => String(i.seller || '')));
-  const subTotal = sellersInOrder.size === 1 ? order.total : mine.reduce((t, i) => t + i.price * i.qty, 0);
+  const itemsValue = mine.reduce((t, i) => t + i.price * i.qty, 0);
+  // Delivery fee printed as its own line (only on a single-seller order, where the whole fee belongs to this parcel)
+  const shippingCharges = sellersInOrder.size === 1 ? Number(order.deliveryFee) || 0 : 0;
+  const discount = sellersInOrder.size === 1 ? Math.max(0, Math.round((itemsValue + shippingCharges - Number(order.total || 0)) * 100) / 100) : 0;
 
   const weight = await parcelWeight(order, seller, opts);
 
@@ -202,7 +205,12 @@ async function createShipment(order, seller, opts = {}) {
     shipping_is_billing: true,
     order_items: mine.map((i) => ({ name: String(i.name).slice(0, 100), sku: `SB-${i.productId}`, units: i.qty, selling_price: i.price })),
     payment_method: order.paymentStatus === 'paid' ? 'Prepaid' : 'COD',
-    sub_total: subTotal,
+    sub_total: itemsValue,
+    shipping_charges: shippingCharges,
+    total_discount: discount,
+    // Shows the marketplace (and the shop) on the label
+    reseller_name: `Sheen Bazaar${seller.businessName ? ` · ${String(seller.businessName).slice(0, 40)}` : ''}`,
+    comment: 'Sold on Sheen Bazaar (sheenbazaar.online)',
     length: Number(opts.length) || s.length,
     breadth: Number(opts.breadth) || s.breadth,
     height: Number(opts.height) || s.height,
