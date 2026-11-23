@@ -61,6 +61,16 @@ router.put('/pickup-address', auth(true), sellerOnly, async (req, res) => {
   res.json(a);
 });
 
+// ── Seller: couriers + prices for an order ──
+// GET /api/shipping/orders/:id/rates?weightKg=0.8
+router.get('/orders/:id/rates', auth(true), sellerOnly, async (req, res) => {
+  if (!(await sr.isEnabled())) return res.status(400).json({ message: 'Automatic courier is not switched on.' });
+  const order = await Order.findOne({ _id: req.params.id, 'items.seller': req.user._id });
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  try { res.json(await sr.courierRates(order, req.user, { weightKg: req.query.weightKg })); }
+  catch (err) { res.status(400).json({ message: err.message }); }
+});
+
 // ── Seller: book courier for an order (one click) ──
 // POST /api/shipping/orders/:id/book { weightKg?, length?, breadth?, height? }
 router.post('/orders/:id/book', auth(true), sellerOnly, async (req, res) => {

@@ -100,6 +100,60 @@ async function ensurePickup(seller) {
   return nickname;
 }
 
+// Total parcel weight for this seller's items (kg)
+async function parcelWeight(order, seller, opts = {}) {
+  const s = await settings();
+  let weight = Number(opts.weightKg);
+  if (!(weight > 0)) {
+    const Product = require('../models/Product');
+    const mine = order.items.filter((i) => String(i.seller) === String(seller._id));
+    const prods = await Product.find({ id: { $in: mine.map((i) => i.productId) } }).select('id weightKg sku');
+    const w = new Map(prods.map((p) => [p.id, p.weightKg || 0]));
+    weight = mine.reduce((t, i) => t + (w.get(i.productId) || s.weight) * i.qty, 0);
+  }
+  return Math.max(0.1, Math.round(weight * 100) / 100);
+}
+
+// Where the parcel is picked up from (pincode), for price quotes
+async function pickupPincode(seller) {
+  // Seller's own saved address is what ensurePickup() books from
+  if (seller.pickupAddress?.addressLine && seller.pickupAddress?.pincode) return String(seller.pickupAddress.pincode);
+  const s = await settings();
+  const d = await api('GET', '/settings/company/pickup');
+  const list = d?.data?.shipping_address || [];
+  const hit = list.find((x) => x.pickup_location === (seller.shiprocketPickup || s.pickupLocation)) || list[0];
+  if (!hit?.pin_code) throw new Error('Please add your pickup address first (where the courier collects parcels).');
+  return String(hit.pin_code);
+}
+
+// Couriers that can take this parcel, with price and delivery time
+async function courierRates(order, seller, opts = {}) {
+  const mine = order.items.filter((i) => String(i.seller) === String(seller._id));
+  if (!mine.length) throw new Error('This order has no items from your shop');
+  const sellersInOrder = new Set(order.items.map((i) => String(i.seller || '')));
+  const value = sellersInOrder.size === 1 ? order.total : mine.reduce((t, i) => t + i.price * i.qty, 0);
+  const cod = order.paymentStatus === 'paid' ? 0 : 1;
+  const [from, weight] = await Promise.all([pickupPincode(seller), parcelWeight(order, seller, opts)]);
+  const q = new URLSearchParams({ pickup_postcode: from, delivery_postcode: String(order.address?.pincode || ''), weight: String(weight), cod: String(cod), declared_value: String(Math.round(value)) });
+  const d = await api('GET', `/courier/serviceability/?${q}`);
+  const list = (d?.data?.available_courier_companies || []).map((c) => ({
+    id: Number(c.courier_company_id),
+    name: c.courier_name,
+    price: Math.round(Number(c.rate ?? (Number(c.freight_charge || 0) + Number(c.cod_charges || 0))) * 100) / 100,
+    days: Number(c.estimated_delivery_days) || null,
+    etd: c.etd || '',
+    rating: Number(c.rating) || null,
+    mode: Number(c.is_surface) === 1 || c.is_surface === true ? 'Surface' : 'Air',
+    cod: Number(c.cod) === 1,
+  })).filter((c) => c.id && (!cod || c.cod));
+  if (!list.length) throw new Error(`No courier delivers from ${from} to ${order.address?.pincode}${cod ? ' with Cash on Delivery' : ''} right now.`);
+  list.sort((a, b) => a.price - b.price);
+  const cheapest = list[0].id;
+  const fastest = [...list].sort((a, b) => (a.days || 99) - (b.days || 99) || a.price - b.price)[0].id;
+  const recommended = Number(d?.data?.recommended_courier_company_id) || null;
+  return { from, to: String(order.address?.pincode || ''), weight, cod: !!cod, couriers: list.slice(0, 15), cheapest, fastest, recommended: list.some((c) => c.id === recommended) ? recommended : null };
+}
+
 const pad = (n) => String(n).padStart(2, '0');
 const srDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
@@ -107,19 +161,12 @@ const srDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDa
 // opts: { weightKg, length, breadth, height }
 async function createShipment(order, seller, opts = {}) {
   const s = await settings();
-  const Product = require('../models/Product');
   const mine = order.items.filter((i) => String(i.seller) === String(seller._id));
   if (!mine.length) throw new Error('This order has no items from your shop');
   const sellersInOrder = new Set(order.items.map((i) => String(i.seller || '')));
   const subTotal = sellersInOrder.size === 1 ? order.total : mine.reduce((t, i) => t + i.price * i.qty, 0);
 
-  let weight = Number(opts.weightKg);
-  if (!(weight > 0)) {
-    const prods = await Product.find({ id: { $in: mine.map((i) => i.productId) } }).select('id weightKg sku');
-    const w = new Map(prods.map((p) => [p.id, p.weightKg || 0]));
-    weight = mine.reduce((t, i) => t + (w.get(i.productId) || s.weight) * i.qty, 0);
-  }
-  weight = Math.max(0.1, Math.round(weight * 100) / 100);
+  const weight = await parcelWeight(order, seller, opts);
 
   const pickup = await ensurePickup(seller);
   const a = order.address || {};
@@ -156,8 +203,10 @@ async function createShipment(order, seller, opts = {}) {
     awb: '', courierName: '', labelUrl: '', trackUrl: '', status: 'created', events: [],
   };
 
-  // Courier + AWB (Shiprocket picks the courier by your priority settings)
-  const awbRes = await api('POST', '/courier/assign/awb', { shipment_id: created.shipment_id });
+  // Courier + AWB: the courier the seller picked, or Shiprocket's choice by your priority settings
+  const awbBody = { shipment_id: created.shipment_id };
+  if (Number(opts.courierId) > 0) awbBody.courier_id = Number(opts.courierId);
+  const awbRes = await api('POST', '/courier/assign/awb', awbBody);
   const awbData = awbRes?.response?.data || {};
   if (!awbData.awb_code) {
     shipment.status = 'awb_failed';
@@ -213,4 +262,4 @@ function mapStatus(text) {
   return null;
 }
 
-module.exports = { settings, isEnabled, login, api, ensurePickup, createShipment, getLabel, cancelShiprocketOrder, track, mapStatus };
+module.exports = { settings, isEnabled, login, api, ensurePickup, createShipment, courierRates, parcelWeight, getLabel, cancelShiprocketOrder, track, mapStatus };
