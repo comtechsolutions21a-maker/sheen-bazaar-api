@@ -29,6 +29,16 @@ const siteContentSchema = new mongoose.Schema({
   cashfreeEnabled: { type: Boolean, default: false },
   // Which gateway is primary: 'razorpay' or 'cashfree'
   primaryGateway: { type: String, enum: ['razorpay', 'cashfree'], default: 'razorpay' },
+  // Shiprocket courier connection (API user from Shiprocket → Settings → API)
+  shiprocketEnabled: { type: Boolean, default: false },
+  shiprocketEmail: { type: String, default: '' },
+  shiprocketPassword: { type: String, default: '' },
+  shiprocketPickupLocation: { type: String, default: '' }, // store's main pickup nickname (fallback)
+  shiprocketWebhookToken: { type: String, default: '' },
+  shiprocketDefaultWeight: { type: Number, default: 0.5 },
+  shiprocketDefaultLength: { type: Number, default: 15 },
+  shiprocketDefaultBreadth: { type: Number, default: 12 },
+  shiprocketDefaultHeight: { type: Number, default: 10 },
 }, { timestamps: true });
 
 siteContentSchema.statics.get = async function () {

@@ -23,6 +23,13 @@ const userSchema = new mongoose.Schema(
     priceAlerts: { type: [{ productId: Number, targetPrice: Number, createdAt: { type: Date, default: Date.now } }], default: [] },
     // Spin & Win
     lastSpinAt: { type: Date, default: null },
+    // Seller's pickup address for courier collection (Shiprocket)
+    pickupAddress: {
+      name: { type: String, default: '' }, phone: { type: String, default: '' },
+      addressLine: { type: String, default: '' }, landmark: { type: String, default: '' },
+      city: { type: String, default: '' }, state: { type: String, default: '' }, pincode: { type: String, default: '' },
+    },
+    shiprocketPickup: { type: String, default: '' }, // pickup nickname saved in Shiprocket
     cartUpdatedAt: { type: Date, default: null },
     lastAbandonedCartEmailAt: { type: Date, default: null },
 

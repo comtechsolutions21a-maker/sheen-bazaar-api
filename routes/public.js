@@ -17,6 +17,9 @@ router.get('/public/site-content', async (req, res) => {
   const safe = content.toObject();
   delete safe.razorpayKeySecret;
   delete safe.cashfreeSecretKey;
+  delete safe.shiprocketPassword;
+  delete safe.shiprocketWebhookToken;
+  delete safe.shiprocketEmail;
   res.json(safe);
 });
 

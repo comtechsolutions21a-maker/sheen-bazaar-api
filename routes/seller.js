@@ -42,7 +42,7 @@ const SELLER_PRODUCT_FIELDS = [
   'name', 'icon', 'image', 'images', 'price', 'old', 'badge', 'cat', 'desc', 'stock',
   'brand', 'sku', 'highlights', 'specifications', 'variants', 'tags',
   'deliveryDays', 'returnDays', 'warrantyMonths', 'returnPolicy',
-  'flashPrice', 'flashEndsAt',
+  'flashPrice', 'flashEndsAt', 'weightKg',
 ];
 
 function pickProductFields(body) {
@@ -97,6 +97,88 @@ router.put('/products/:id', async (req, res) => {
   res.json(product);
 });
 
+// POST /api/seller/products/bulk { rows: [...] }
+// Bulk upload from the Excel/CSV template. A row whose SKU matches one of this
+// seller's products UPDATES it (only the filled-in columns change, so a sheet
+// with just sku + price + stock works as a quick price/stock sync); any other
+// row CREATES a new product.
+router.post('/products/bulk', async (req, res) => {
+  const rows = Array.isArray(req.body.rows) ? req.body.rows.slice(0, 500) : [];
+  if (!rows.length) return res.status(400).json({ message: 'No rows found in the file' });
+
+  const has = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+  const num = (v) => { const n = Number(String(v).replace(/[₹,\s]/g, '')); return Number.isFinite(n) ? n : NaN; };
+  const list = (v) => String(v).split('|').map((x) => x.trim()).filter(Boolean);
+
+  const skus = rows.map((r) => String(r.sku || '').trim()).filter(Boolean);
+  const existing = await Product.find({ seller: req.user._id, sku: { $in: skus } });
+  const bySku = new Map(existing.map((p) => [p.sku, p]));
+  const seen = new Set();
+  const result = { created: 0, updated: 0, failed: [] };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowNo = Number(r.__row) || i + 2;
+    try {
+      const sku = String(r.sku || '').trim();
+      if (sku && seen.has(sku)) throw new Error(`SKU "${sku}" appears twice in the file`);
+      if (sku) seen.add(sku);
+
+      const data = {};
+      if (has(r.name)) data.name = String(r.name).trim().slice(0, 200);
+      if (has(r.category)) data.cat = String(r.category).trim();
+      if (has(r.price)) { data.price = num(r.price); if (!(data.price > 0)) throw new Error('price must be a number above 0'); }
+      if (has(r.mrp)) { data.old = num(r.mrp); if (!(data.old >= 0)) throw new Error('mrp must be a number'); }
+      if (has(r.stock)) { data.stock = Math.floor(num(r.stock)); if (!(data.stock >= 0)) throw new Error('stock must be 0 or more'); }
+      if (has(r.brand)) data.brand = String(r.brand).trim().slice(0, 80);
+      if (has(r.description)) data.desc = String(r.description).trim().slice(0, 5000);
+      if (has(r.image_urls)) {
+        data.images = list(r.image_urls).filter((u) => /^https?:\/\//i.test(u)).slice(0, 8);
+        if (data.images.length) data.image = data.images[0];
+      }
+      if (has(r.highlights)) data.highlights = list(r.highlights).slice(0, 10);
+      if (has(r.delivery_days)) data.deliveryDays = Math.max(1, Math.floor(num(r.delivery_days)) || 5);
+      if (has(r.return_days)) data.returnDays = Math.max(0, Math.floor(num(r.return_days)) || 0);
+      if (has(r.weight_kg)) data.weightKg = Math.max(0, num(r.weight_kg) || 0);
+      if (has(r.flash_price)) data.flashPrice = Math.max(0, num(r.flash_price) || 0);
+      if (has(r.flash_ends)) {
+        const d = new Date(String(r.flash_ends).trim().replace(' ', 'T'));
+        if (Number.isNaN(d.getTime())) throw new Error('flash_ends must look like 2026-12-31 18:00');
+        data.flashEndsAt = d;
+      }
+
+      const product = sku ? bySku.get(sku) : null;
+      if (product) {
+        const before = snapshot(product);
+        const wasOutOfStock = product.stock === 0;
+        Object.assign(product, data);
+        await product.save();
+        onProductPriceChange(before, product);
+        if (wasOutOfStock && product.stock > 0) {
+          const { notifyBackInStock } = require('../utils/stockAlerts');
+          notifyBackInStock(product).catch(() => {});
+        }
+        result.updated++;
+      } else {
+        if (!data.name || !data.price || !data.cat) throw new Error('new products need name, category and price');
+        const created = await Product.create({
+          icon: '🛍️', ...data, sku,
+          id: await nextProductId(),
+          old: data.old || data.price,
+          stock: data.stock ?? 100,
+          seller: req.user._id,
+          active: !!req.user.sellerApproved,
+        });
+        if (sku) bySku.set(sku, created);
+        result.created++;
+      }
+    } catch (err) {
+      result.failed.push({ row: rowNo, sku: r.sku || '', name: r.name || '', error: err.message });
+    }
+  }
+  res.json(result);
+});
+
 // DELETE /api/seller/products/:id — remove own listing
 router.delete('/products/:id', async (req, res) => {
   const result = await Product.deleteOne({ id: Number(req.params.id), seller: req.user._id });
@@ -117,6 +199,8 @@ router.get('/orders', async (req, res) => {
     transactionId: o.transactionId,
     shipping: o.shipping,
     address: o.address,
+    total: o.total,
+    shipments: (o.shipments || []).filter((s) => String(s.seller) === String(req.user._id)),
     items: o.items.filter((i) => String(i.seller) === String(req.user._id)),
   }));
   res.json(scoped);

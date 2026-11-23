@@ -73,6 +73,8 @@ const productSchema = new mongoose.Schema({
   approved: { type: Boolean, default: true }, // admin can unapprove
   featured: { type: Boolean, default: false },
   // Flash sale — sale price that applies only until flashEndsAt
+  // Parcel weight for courier booking (kg). 0 = use the store default.
+  weightKg: { type: Number, default: 0 },
   flashPrice: { type: Number, default: 0 },
   flashEndsAt: { type: Date, default: null },
   // Returns

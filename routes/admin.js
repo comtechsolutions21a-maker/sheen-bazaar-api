@@ -108,13 +108,24 @@ router.put('/settings', async (req, res) => {
 });
 
 // ─── SITE CONTENT ───
-router.get('/site-content', async (req, res) => { res.json(await SiteContent.get()); });
+router.get('/site-content', async (req, res) => {
+  const content = await SiteContent.get();
+  // Make the courier webhook token once, so the admin can paste it into Shiprocket
+  if (!content.shiprocketWebhookToken) { content.shiprocketWebhookToken = require('crypto').randomBytes(18).toString('hex'); await content.save(); }
+  const out = content.toObject();
+  out.shiprocketPasswordSet = !!out.shiprocketPassword;
+  out.shiprocketPassword = ''; // never sent back to the browser
+  res.json(out);
+});
 router.put('/site-content', async (req, res) => {
   const content = await SiteContent.get();
-  const allowed = ['heroTitle','heroSubtitle','heroBadge','heroCta','announcementText','announcementActive','flashSaleActive','flashSaleText','flashSaleSubtext','maintenanceMode','maintenanceMessage','razorpayKeyId','razorpayKeySecret','razorpayLiveMode','razorpayEnabled','cashfreeAppId','cashfreeSecretKey','cashfreeLiveMode','cashfreeEnabled','primaryGateway'];
+  const allowed = ['heroTitle','heroSubtitle','heroBadge','heroCta','announcementText','announcementActive','flashSaleActive','flashSaleText','flashSaleSubtext','maintenanceMode','maintenanceMessage','razorpayKeyId','razorpayKeySecret','razorpayLiveMode','razorpayEnabled','cashfreeAppId','cashfreeSecretKey','cashfreeLiveMode','cashfreeEnabled','primaryGateway','shiprocketEnabled','shiprocketEmail','shiprocketPickupLocation','shiprocketDefaultWeight','shiprocketDefaultLength','shiprocketDefaultBreadth','shiprocketDefaultHeight'];
   allowed.forEach(k => { if (req.body[k] !== undefined) content[k] = req.body[k]; });
+  // Password only changes when a new one is typed (it's never shown back)
+  if (typeof req.body.shiprocketPassword === 'string' && req.body.shiprocketPassword.trim()) content.shiprocketPassword = req.body.shiprocketPassword.trim();
   await content.save();
-  res.json(content);
+  const out = content.toObject(); out.shiprocketPasswordSet = !!out.shiprocketPassword; out.shiprocketPassword = '';
+  res.json(out);
 });
 
 // Public route for site content (no auth needed)

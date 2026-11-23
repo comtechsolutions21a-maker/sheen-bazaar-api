@@ -429,6 +429,10 @@ router.post('/:id/cancel', async (req, res) => {
 
     await order.save();
     notifyOrderStatus(order, 'cancelled');
+    // Cancel any courier booking so no pickup happens
+    for (const sh of order.shipments || []) {
+      if (sh.srOrderId) require('../utils/shiprocket').cancelShiprocketOrder(sh.srOrderId).catch((e) => console.error('Courier cancel failed:', e.message));
+    }
     res.json(order);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });

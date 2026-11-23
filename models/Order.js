@@ -72,6 +72,16 @@ const orderSchema = new mongoose.Schema({
     shippedAt: { type: Date, default: null },
     deliveredAt: { type: Date, default: null },
   },
+  // Courier bookings (Shiprocket) — one per seller in the order
+  shipments: [{
+    seller: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    provider: { type: String, default: 'shiprocket' },
+    ref: String, srOrderId: String, shipmentId: String,
+    awb: { type: String, index: true }, courierName: String, labelUrl: String, trackUrl: String,
+    status: String, error: String, etd: Date,
+    events: [{ at: String, status: String, activity: String, location: String, _id: false }],
+    updatedAt: { type: Date, default: Date.now },
+  }],
   // Return request
   returnRequested: { type: Boolean, default: false },
   returnReason: { type: String, default: '' },

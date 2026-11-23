@@ -16,6 +16,7 @@ const feedbackRoutes = require('./routes/feedback');
 const chatRoutes = require('./routes/chat');
 const pushRoutes = require('./routes/push');
 const meRoutes = require('./routes/me');
+const shippingRoutes = require('./routes/shipping');
 const { startAbandonedCartJob } = require('./utils/abandonedCart');
 const { startCampaignJob } = require('./utils/campaigns');
 
@@ -68,6 +69,7 @@ app.use('/api/feedback', feedbackRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/me', meRoutes);
+app.use('/api/shipping', shippingRoutes);
 
 // Unknown API route
 app.use('/api', (req, res) => res.status(404).json({ message: 'Not found' }));
@@ -95,4 +97,5 @@ connectDB().then(() => {
   app.listen(PORT, '0.0.0.0', () => console.log(`Sheen Bazaar API running on port ${PORT}`));
   startAbandonedCartJob();
   startCampaignJob();
+  shippingRoutes.startTrackingJob();
 });
