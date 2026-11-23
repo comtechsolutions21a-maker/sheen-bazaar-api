@@ -69,7 +69,8 @@ router.get('/orders/:id/rates', auth(true), sellerOnly, async (req, res) => {
   const order = await Order.findOne({ _id: req.params.id, 'items.seller': req.user._id });
   if (!order) return res.status(404).json({ message: 'Order not found' });
   try {
-    const rates = await sr.courierRates(order, req.user, { weightKg: req.query.weightKg });
+    const { weightKg, length, breadth, height } = req.query;
+    const rates = await sr.courierRates(order, req.user, { weightKg, length, breadth, height });
     const rule = await deliveryRule();
     // For each courier: how much the seller pays after the customer's delivery fee
     rates.customerPaid = customerShareFor(order, req.user._id);

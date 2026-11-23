@@ -135,8 +135,13 @@ async function courierRates(order, seller, opts = {}) {
   const sellersInOrder = new Set(order.items.map((i) => String(i.seller || '')));
   const value = sellersInOrder.size === 1 ? order.total : mine.reduce((t, i) => t + i.price * i.qty, 0);
   const cod = order.paymentStatus === 'paid' ? 0 : 1;
-  const [from, weight] = await Promise.all([pickupPincode(seller), parcelWeight(order, seller, opts)]);
-  const q = new URLSearchParams({ pickup_postcode: from, delivery_postcode: String(order.address?.pincode || ''), weight: String(weight), cod: String(cod), declared_value: String(Math.round(value)) });
+  const [from, weight, s] = await Promise.all([pickupPincode(seller), parcelWeight(order, seller, opts), settings()]);
+  // Couriers bill the bigger of real weight and box-size weight (L×W×H ÷ 5000), so quote on that
+  const box = { length: Number(opts.length) || s.length, breadth: Number(opts.breadth) || s.breadth, height: Number(opts.height) || s.height };
+  const volumetric = Math.round(((box.length * box.breadth * box.height) / 5000) * 100) / 100;
+  const charged = Math.max(weight, volumetric);
+  const q = new URLSearchParams({ pickup_postcode: from, delivery_postcode: String(order.address?.pincode || ''), weight: String(charged),
+    length: String(box.length), breadth: String(box.breadth), height: String(box.height), cod: String(cod), declared_value: String(Math.round(value)) });
   const d = await api('GET', `/courier/serviceability/?${q}`);
   const list = (d?.data?.available_courier_companies || []).map((c) => ({
     id: Number(c.courier_company_id),
@@ -153,7 +158,7 @@ async function courierRates(order, seller, opts = {}) {
   const cheapest = list[0].id;
   const fastest = [...list].sort((a, b) => (a.days || 99) - (b.days || 99) || a.price - b.price)[0].id;
   const recommended = Number(d?.data?.recommended_courier_company_id) || null;
-  return { from, to: String(order.address?.pincode || ''), weight, cod: !!cod, couriers: list.slice(0, 15), cheapest, fastest, recommended: list.some((c) => c.id === recommended) ? recommended : null };
+  return { from, to: String(order.address?.pincode || ''), weight, volumetric, charged, box, cod: !!cod, couriers: list.slice(0, 15), cheapest, fastest, recommended: list.some((c) => c.id === recommended) ? recommended : null };
 }
 
 const pad = (n) => String(n).padStart(2, '0');
