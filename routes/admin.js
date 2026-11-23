@@ -124,9 +124,15 @@ router.get('/site-content', async (req, res) => {
 router.put('/site-content', async (req, res) => {
   const content = await SiteContent.get();
   const allowed = ['heroTitle','heroSubtitle','heroBadge','heroCta','announcementText','announcementActive','flashSaleActive','flashSaleText','flashSaleSubtext','maintenanceMode','maintenanceMessage','razorpayKeyId','razorpayKeySecret','razorpayLiveMode','razorpayEnabled','cashfreeAppId','cashfreeSecretKey','cashfreeLiveMode','cashfreeEnabled','primaryGateway','shiprocketEnabled','shiprocketEmail','shiprocketPickupLocation','shiprocketDefaultWeight','shiprocketDefaultLength','shiprocketDefaultBreadth','shiprocketDefaultHeight'];
+  const oldSrEmail = String(content.shiprocketEmail || '').toLowerCase();
+  const oldSrPass = content.shiprocketPassword || '';
   allowed.forEach(k => { if (req.body[k] !== undefined) content[k] = req.body[k]; });
   // Password only changes when a new one is typed (it's never shown back)
   if (typeof req.body.shiprocketPassword === 'string' && req.body.shiprocketPassword.trim()) content.shiprocketPassword = req.body.shiprocketPassword.trim();
+  // Switched to a different Shiprocket account → sellers' pickup addresses must be added again there
+  if ((oldSrEmail && String(content.shiprocketEmail || '').toLowerCase() !== oldSrEmail) || (oldSrPass && content.shiprocketPassword !== oldSrPass)) {
+    await require('../models/User').updateMany({ shiprocketPickup: { $exists: true, $ne: null } }, { $unset: { shiprocketPickup: 1 } });
+  }
   await content.save();
   const out = content.toObject(); out.shiprocketPasswordSet = !!out.shiprocketPassword; out.shiprocketPassword = '';
   res.json(out);

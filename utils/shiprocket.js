@@ -34,11 +34,13 @@ async function login(force = false) {
   const s = await settings();
   if (!s.email || !s.password) throw new Error('Shiprocket is not set up. Add the API user email and password in Admin → Settings → Shiprocket.');
   // Shiprocket tokens last about 10 days; refresh after 8
-  if (!force && tokenCache.token && tokenCache.email === s.email && Date.now() - tokenCache.at < 8 * 24 * 3600e3) return tokenCache.token;
+  // Same account = same email AND password (a new account/password must log in again)
+  const key = require('crypto').createHash('sha256').update(`${s.email}\n${s.password}`).digest('hex');
+  if (!force && tokenCache.token && tokenCache.key === key && Date.now() - tokenCache.at < 8 * 24 * 3600e3) return tokenCache.token;
   const r = await fetch(`${BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: s.email, password: s.password }) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.token) throw new Error(d.message || 'Shiprocket login failed — check the API user email and password.');
-  tokenCache = { token: d.token, email: s.email, at: Date.now() };
+  tokenCache = { token: d.token, key, at: Date.now() };
   return d.token;
 }
 
