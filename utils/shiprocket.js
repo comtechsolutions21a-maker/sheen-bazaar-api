@@ -143,22 +143,28 @@ async function courierRates(order, seller, opts = {}) {
   const q = new URLSearchParams({ pickup_postcode: from, delivery_postcode: String(order.address?.pincode || ''), weight: String(charged),
     length: String(box.length), breadth: String(box.breadth), height: String(box.height), cod: String(cod), declared_value: String(Math.round(value)) });
   const d = await api('GET', `/courier/serviceability/?${q}`);
-  const list = (d?.data?.available_courier_companies || []).map((c) => ({
+  // Quotes come without GST; the wallet is charged with it → show the real amount
+  const gstRaw = (await require('../models/Settings').get())?.courierGstPercent;
+  const gst = Number.isFinite(Number(gstRaw)) && gstRaw !== null && gstRaw !== '' ? Number(gstRaw) : 18;
+  const list = (d?.data?.available_courier_companies || []).map((c) => {
+    const ex = Number(c.rate ?? (Number(c.freight_charge || 0) + Number(c.cod_charges || 0)));
+    return {
     id: Number(c.courier_company_id),
     name: c.courier_name,
-    price: Math.round(Number(c.rate ?? (Number(c.freight_charge || 0) + Number(c.cod_charges || 0))) * 100) / 100,
+    priceExGst: Math.round(ex * 100) / 100,
+    price: Math.round(ex * (1 + gst / 100) * 100) / 100,
     days: Number(c.estimated_delivery_days) || null,
     etd: c.etd || '',
     rating: Number(c.rating) || null,
     mode: Number(c.is_surface) === 1 || c.is_surface === true ? 'Surface' : 'Air',
     cod: Number(c.cod) === 1,
-  })).filter((c) => c.id && (!cod || c.cod));
+  }; }).filter((c) => c.id && (!cod || c.cod));
   if (!list.length) throw new Error(`No courier delivers from ${from} to ${order.address?.pincode}${cod ? ' with Cash on Delivery' : ''} right now.`);
   list.sort((a, b) => a.price - b.price);
   const cheapest = list[0].id;
   const fastest = [...list].sort((a, b) => (a.days || 99) - (b.days || 99) || a.price - b.price)[0].id;
   const recommended = Number(d?.data?.recommended_courier_company_id) || null;
-  return { from, to: String(order.address?.pincode || ''), weight, volumetric, charged, box, cod: !!cod, couriers: list.slice(0, 15), cheapest, fastest, recommended: list.some((c) => c.id === recommended) ? recommended : null };
+  return { from, to: String(order.address?.pincode || ''), weight, volumetric, charged, box, gst, cod: !!cod, couriers: list.slice(0, 15), cheapest, fastest, recommended: list.some((c) => c.id === recommended) ? recommended : null };
 }
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -223,7 +229,7 @@ async function createShipment(order, seller, opts = {}) {
   shipment.awb = String(awbData.awb_code);
   shipment.courierName = awbData.courier_name || '';
   shipment.courierId = Number(awbData.courier_company_id) || Number(opts.courierId) || null;
-  if (Number(awbData.freight_charges) > 0) shipment.cost = Number(awbData.freight_charges);
+  if (Number(awbData.freight_charges) > 0) shipment.cost = Math.round(Number(awbData.freight_charges) * 118) / 100; // + GST (fallback only)
   shipment.trackUrl = `https://shiprocket.co/tracking/${shipment.awb}`;
   shipment.status = 'awb_assigned';
 

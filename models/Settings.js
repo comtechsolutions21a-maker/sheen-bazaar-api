@@ -38,6 +38,8 @@ const settingsSchema = new mongoose.Schema(
     deliveryFee: { type: Number, default: 49, min: 0 },
     freeDeliveryAbove: { type: Number, default: 499, min: 0 },
     chargeSellerShipping: { type: Boolean, default: true },
+    // Shiprocket quotes prices without GST but charges the wallet with it
+    courierGstPercent: { type: Number, default: 18, min: 0, max: 50 },
     // Push notification keys (generated automatically on first use)
     vapidPublicKey: { type: String, default: '' },
     vapidPrivateKey: { type: String, default: '' },

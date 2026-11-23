@@ -100,8 +100,8 @@ router.get('/settings', async (req, res) => {
 });
 router.put('/settings', async (req, res) => {
   const settings = await Settings.get();
-  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','whatsappMessage','facebookUrl','instagramUrl','twitterUrl','youtubeUrl','linkedinUrl','pinterestUrl','telegramUrl','threadsUrl','lowStockThreshold','gstin','gstEnabled','gstPercent','referralRewardAmount','serviceablePincodes','blockedPincodes','codPincodes','fastPincodes','fastDeliveryDays','deliveryFee','freeDeliveryAbove','chargeSellerShipping'];
-  for (const k of ['deliveryFee', 'freeDeliveryAbove']) { // blank/bad numbers keep the old value
+  const allowed = ['commissionPercent','siteName','supportEmail','supportPhone','address','whatsappNumber','whatsappMessage','facebookUrl','instagramUrl','twitterUrl','youtubeUrl','linkedinUrl','pinterestUrl','telegramUrl','threadsUrl','lowStockThreshold','gstin','gstEnabled','gstPercent','referralRewardAmount','serviceablePincodes','blockedPincodes','codPincodes','fastPincodes','fastDeliveryDays','deliveryFee','freeDeliveryAbove','chargeSellerShipping','courierGstPercent'];
+  for (const k of ['deliveryFee', 'freeDeliveryAbove', 'courierGstPercent']) { // blank/bad numbers keep the old value
     if (req.body[k] !== undefined) { const n = Number(req.body[k]); if (req.body[k] === '' || !Number.isFinite(n) || n < 0) delete req.body[k]; else req.body[k] = n; }
   }
   if (req.body.chargeSellerShipping !== undefined) req.body.chargeSellerShipping = req.body.chargeSellerShipping !== false && req.body.chargeSellerShipping !== 'false';
